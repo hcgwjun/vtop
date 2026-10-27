@@ -19,13 +19,14 @@ pub fn find_serving<'a, I: Iterator<Item = &'a ProcInfo>>(procs: I) -> Option<&'
     procs.filter(|p| p.cmd.contains("vllm")).min_by_key(|p| p.start_time)
 }
 
-/// cmd is only fetched when asked for, so new processes (a restarted vLLM) need `with_cmd`.
+#[cfg(test)]
 pub fn refresh(sys: &mut Sys) {
     sys.refresh_cpu_usage();
     sys.refresh_memory();
     refresh_processes(sys);
 }
 
+/// cmd is only fetched when asked for, so new processes (a restarted vLLM) need `with_cmd`.
 pub fn refresh_processes(sys: &mut Sys) {
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,

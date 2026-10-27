@@ -49,7 +49,8 @@ pub fn uptime(secs: u64) -> String {
     }
 }
 
-/// Min–max scales `values` to 0..=1000 for the Sparkline widget; `None` stays a gap, a flat series is all zero.
+/// Min–max scales `values` to 125..=1000 for the Sparkline widget (max 1000). 125 is one eighth of the scale,
+/// so the minimum still draws as the smallest bar instead of a blank; `None` stays a gap, a flat series is all 125.
 pub fn normalize(values: &[Option<f32>]) -> Vec<Option<u64>> {
     let present = values.iter().flatten();
     let max = present.clone().fold(f32::MIN, |a, &b| a.max(b));
@@ -57,7 +58,7 @@ pub fn normalize(values: &[Option<f32>]) -> Vec<Option<u64>> {
     let span = max - min;
     values
         .iter()
-        .map(|v| v.map(|v| if span <= 0.0 { 0 } else { (((v - min) / span) * 1000.0).round() as u64 }))
+        .map(|v| v.map(|v| if span <= 0.0 { 125 } else { (125.0 + ((v - min) / span) * 875.0).round() as u64 }))
         .collect()
 }
 
@@ -103,9 +104,9 @@ mod tests {
 
     #[test]
     fn normalize_min_max_to_thousand() {
-        assert_eq!(normalize(&[Some(0.0), Some(0.5), Some(1.0)]), vec![Some(0), Some(500), Some(1000)]);
-        assert_eq!(normalize(&[None, Some(1.0)]), vec![None, Some(0)]);
-        assert_eq!(normalize(&[Some(3.0), Some(3.0)]), vec![Some(0), Some(0)]);
+        assert_eq!(normalize(&[Some(0.0), Some(0.5), Some(1.0)]), vec![Some(125), Some(563), Some(1000)]);
+        assert_eq!(normalize(&[None, Some(1.0)]), vec![None, Some(125)]);
+        assert_eq!(normalize(&[Some(3.0), Some(3.0)]), vec![Some(125), Some(125)]);
     }
 
     #[test]
