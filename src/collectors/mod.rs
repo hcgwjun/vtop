@@ -2,6 +2,7 @@
 
 use std::sync::{Arc, RwLock};
 
+use crate::config::SharedConfig;
 use crate::snapshot::{Shared, Snapshot};
 
 pub mod vllm;
@@ -9,8 +10,8 @@ pub mod vllm;
 #[cfg(target_os = "macos")]
 pub mod hw_macos;
 
-pub fn spawn(_vllm_url: &str) -> Shared {
+pub fn spawn(cfg: SharedConfig) -> Shared {
     let state: Shared = Arc::new(RwLock::new(Snapshot::default()));
-    // shortcut: no collectors yet, add vllm/system/hw threads here as each lands
+    vllm::spawn(state.clone(), cfg.clone());
     state
 }

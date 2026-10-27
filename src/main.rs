@@ -1,4 +1,5 @@
 mod collectors;
+mod config;
 mod history;
 mod snapshot;
 mod ui;
@@ -15,10 +16,14 @@ struct Args {
     /// Bind an OpenAI-compatible proxy here to record per-request stats
     #[arg(long)]
     proxy: Option<String>,
+    /// Draw sparklines with ASCII instead of block characters
+    #[arg(long)]
+    ascii: bool,
 }
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let state = collectors::spawn(&args.url);
-    ui::run(state)
+    let cfg = config::Config::new(args.url, args.ascii);
+    let state = collectors::spawn(cfg.clone());
+    ui::run(state, cfg)
 }

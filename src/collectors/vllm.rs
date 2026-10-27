@@ -3,7 +3,10 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::snapshot::Vllm;
+use std::thread;
+
+use crate::config::SharedConfig;
+use crate::snapshot::{Shared, Vllm};
 
 pub type Labels = Vec<(String, String)>;
 
@@ -14,6 +17,62 @@ pub struct Metrics(HashMap<String, Vec<(Labels, f64)>>);
 #[derive(Debug, Default)]
 pub struct Rate {
     last: Option<(Instant, f64)>,
+}
+
+pub fn metrics_url(base: &str) -> String {
+    let base = if base.contains("://") { base.to_string() } else { format!("http://{base}") };
+    format!("{}/metrics", base.trim_end_matches('/'))
+}
+
+/// Polls `/metrics` every interval; three straight failures mark the server unreachable.
+pub fn spawn(state: Shared, cfg: SharedConfig) {
+    thread::Builder::new()
+        .name("vllm".into())
+        .spawn(move || {
+            let url = metrics_url(&cfg.url);
+            let models_url = url.replace("/metrics", "/v1/models");
+            let (mut generation, mut prompt) = (Rate::default(), Rate::default());
+            let mut failures = 0u32;
+            let mut model: Option<String> = None;
+            loop {
+                let timeout = cfg.interval().min(std::time::Duration::from_secs(5));
+                let client = reqwest::blocking::Client::builder().timeout(timeout).build();
+                let body = client.and_then(|c| c.get(&url).send()).and_then(|r| r.error_for_status()).and_then(|r| r.text());
+                let mut snap = state.write().unwrap();
+                match body {
+                    Ok(text) => {
+                        failures = 0;
+                        let now = Instant::now();
+                        let mut v = to_vllm(&parse(&text), &mut generation, &mut prompt, now);
+                        if v.model.is_none() {
+                            if model.is_none() {
+                                model = model_from_api(&models_url, timeout);
+                            }
+                            v.model = model.clone();
+                        }
+                        snap.vllm = v;
+                        snap.sampled_at = Some(now);
+                        snap.errors.retain(|e| !e.starts_with("vllm:"));
+                    }
+                    Err(e) => {
+                        failures += 1;
+                        if failures >= 3 {
+                            snap.vllm = Vllm::default();
+                            snap.errors.retain(|e| !e.starts_with("vllm:"));
+                            snap.errors.push(format!("vllm: {e}"));
+                        }
+                    }
+                }
+                drop(snap);
+                thread::sleep(cfg.interval());
+            }
+        })
+        .expect("spawn vllm thread");
+}
+
+fn model_from_api(url: &str, timeout: std::time::Duration) -> Option<String> {
+    let v: serde_json::Value = reqwest::blocking::Client::builder().timeout(timeout).build().ok()?.get(url).send().ok()?.json().ok()?;
+    v["data"][0]["id"].as_str().map(str::to_string)
 }
 
 pub fn parse(text: &str) -> Metrics {
@@ -168,5 +227,17 @@ mod tests {
         let p50 = m.histogram_quantile("vllm:time_to_first_token_seconds", 0.5).unwrap();
         assert!((p50 - 0.3).abs() < 1e-9, "{p50}");
         assert_eq!(m.histogram_quantile("vllm:nope", 0.5), None);
+    }
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::metrics_url;
+
+    #[test]
+    fn metrics_url_normalizes() {
+        assert_eq!(metrics_url("127.0.0.1:8000"), "http://127.0.0.1:8000/metrics");
+        assert_eq!(metrics_url("http://h:8000/"), "http://h:8000/metrics");
+        assert_eq!(metrics_url("https://h"), "https://h/metrics");
     }
 }

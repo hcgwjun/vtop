@@ -3,9 +3,10 @@ use std::time::Duration;
 use crossterm::event::{self, Event, KeyCode};
 use ratatui::widgets::Paragraph;
 
+use crate::config::SharedConfig;
 use crate::snapshot::Shared;
 
-pub fn run(state: Shared) -> anyhow::Result<()> {
+pub fn run(state: Shared, _cfg: SharedConfig) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
     loop {
         let snap = state.read().unwrap().clone();
