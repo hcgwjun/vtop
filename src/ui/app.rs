@@ -71,6 +71,7 @@ impl App {
         self.history.push("net_rx", f(snap.system.net_rx_bps));
         self.history.push("net_tx", f(snap.system.net_tx_bps));
         self.history.push("kv", f(v.kv_cache_usage));
+        self.history.push("prefix_hit", f(v.prefix_cache_hit_rate));
         self.history.push("gpu_util", f(gpu_avg(|g| g.utilization)));
         self.history.push("gpu_mem", f(gpu_sum(|g| g.mem_used.map(|b| b as f64))));
         self.history.push("power", f(gpu_sum(|g| g.power_w)));

@@ -8,7 +8,7 @@ use ratatui::symbols::bar;
 use ratatui::widgets::{Block, Clear, Paragraph, Sparkline};
 
 use super::app::App;
-use super::format::{Level, bytes, downsample, level, na, normalize, num, uptime};
+use super::format::{Level, bar, bytes, downsample, level, na, normalize, num, uptime};
 use crate::config::Config;
 
 const TABS: [&str; 4] = ["Overview", "Engine", "Requests", "Hardware"];
@@ -24,6 +24,8 @@ pub fn draw(f: &mut Frame, app: &App, cfg: &Config) {
     f.render_widget(Paragraph::new(header_lines(app, cfg)), header);
     if app.tab == 0 {
         overview(f, app, cfg, body);
+    } else if app.tab == 1 {
+        super::engine::draw(f, app, cfg, body);
     } else if app.tab == 2 {
         super::requests_tab::draw(f, app, body);
     } else {
@@ -89,12 +91,13 @@ fn sub<T>(v: Option<T>, f: impl Fn(T) -> String) -> String {
     v.map(f).unwrap_or_default()
 }
 
-struct Card {
-    title: &'static str,
-    value: String,
-    sub: String,
-    key: &'static str,
-    level: Level,
+pub(super) struct Card {
+    pub title: &'static str,
+    pub value: String,
+    pub sub: String,
+    /// History key for the sparkline.
+    pub key: &'static str,
+    pub level: Level,
 }
 
 fn cards(app: &App) -> Vec<Card> {
@@ -218,7 +221,7 @@ const ASCII_BARS: bar::Set = bar::Set {
     empty: " ",
 };
 
-fn card(f: &mut Frame, app: &App, cfg: &Config, c: &Card, area: Rect) {
+pub(super) fn card(f: &mut Frame, app: &App, cfg: &Config, c: &Card, area: Rect) {
     let border = match c.level {
         Level::Ok => Style::default().fg(Color::Green),
         Level::Warn => Style::default().fg(Color::Yellow),
@@ -243,12 +246,6 @@ fn card(f: &mut Frame, app: &App, cfg: &Config, c: &Card, area: Rect) {
     let points = normalize(&downsample(&app.history.window(c.key, samples_for(app, cfg)), graph.width as usize));
     let set = if cfg.ascii { ASCII_BARS } else { bar::NINE_LEVELS };
     f.render_widget(Sparkline::default().data(points).max(1000).bar_set(set).absent_value_symbol(" "), graph);
-}
-
-fn bar(ratio: f64, width: usize, ascii: bool) -> String {
-    let filled = (ratio.clamp(0.0, 1.0) * width as f64).round() as usize;
-    let (on, off) = if ascii { ('#', '.') } else { ('█', '░') };
-    std::iter::repeat_n(on, filled).chain(std::iter::repeat_n(off, width - filled)).collect()
 }
 
 fn help_overlay(f: &mut Frame, area: Rect) {

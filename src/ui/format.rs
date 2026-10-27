@@ -75,6 +75,13 @@ pub fn downsample(values: &[Option<f32>], width: usize) -> Vec<Option<f32>> {
         .collect()
 }
 
+/// `ratio` 0..=1 as a fixed-width block bar: `████░░░░` (or `####....` in ASCII mode).
+pub fn bar(ratio: f64, width: usize, ascii: bool) -> String {
+    let filled = (ratio.clamp(0.0, 1.0) * width as f64).round() as usize;
+    let (on, off) = if ascii { ('#', '.') } else { ('█', '░') };
+    std::iter::repeat_n(on, filled).chain(std::iter::repeat_n(off, width - filled)).collect()
+}
+
 pub fn level(v: Option<f64>, warn: f64, crit: f64) -> Level {
     match v {
         None => Level::Unknown,
