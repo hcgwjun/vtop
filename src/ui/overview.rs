@@ -183,10 +183,13 @@ fn overview(f: &mut Frame, app: &App, cfg: &Config, area: Rect) {
         _ => "n/a".into(),
     };
     f.render_widget(Paragraph::new(Line::from(vec!["CPU  ".dim(), cpu.into(), "      RAM  ".dim(), ram.into()])), gauges);
-    f.render_widget(
-        Paragraph::new(vec![Line::from("Recent requests".bold()), Line::from("start with --proxy to see per-request rows".dim())]),
-        requests,
-    );
+    let mut lines = vec![Line::from("Recent requests".bold())];
+    if app.proxy_on {
+        lines.extend(super::table::request_rows(&app.requests, requests.width, requests.height.saturating_sub(2) as usize));
+    } else {
+        lines.push(Line::from("start with --proxy to see per-request rows".dim()));
+    }
+    f.render_widget(Paragraph::new(lines), requests);
 }
 
 /// History slots covering the selected window: the UI ingests once per `min(interval, 1 s)`.
@@ -269,13 +272,42 @@ mod tests {
     use crate::ui::app::App;
 
     fn render(w: u16, h: u16, snap: Snapshot) -> String {
-        let cfg = Config::new("http://127.0.0.1:8000".into(), false);
         let mut app = App::default();
         app.ingest(snap);
+        render_app(w, h, &app)
+    }
+
+    fn render_app(w: u16, h: u16, app: &App) -> String {
+        let cfg = Config::new("http://127.0.0.1:8000".into(), false);
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-        t.draw(|f| draw(f, &app, &cfg)).unwrap();
+        t.draw(|f| draw(f, app, &cfg)).unwrap();
         let buf = t.backend().buffer();
         (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>() + "\n").collect()
+    }
+
+    #[test]
+    fn overview_shows_recent_requests_when_proxy_on() {
+        use crate::requests::{Record, Status};
+        let done = Record {
+            id: 1,
+            started_unix_ms: 55_431_000,
+            path: "/v1/chat/completions".into(),
+            model: Some("m".into()),
+            stream: true,
+            status: Status::Done(200),
+            prompt_tokens: Some(1200),
+            output_tokens: Some(261),
+            approx: false,
+            ttft_ms: Some(420.0),
+            duration_ms: Some(8700.0),
+        };
+        let in_flight = Record { id: 2, status: Status::InFlight, output_tokens: None, ..done.clone() };
+        let mut app = App::default();
+        app.proxy_on = true;
+        app.requests = vec![in_flight, done];
+        let out = render_app(120, 40, &app);
+        assert!(out.contains("261") && out.contains("31.5") && out.contains("in flight"), "{out}");
+        assert!(!out.contains("start with --proxy"), "{out}");
     }
 
     #[test]

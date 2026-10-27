@@ -1,18 +1,20 @@
 pub mod app;
 pub mod format;
 pub mod overview;
+pub mod table;
 
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyEventKind};
 
 use crate::config::SharedConfig;
+use crate::requests::SharedLog;
 use crate::snapshot::Shared;
 use app::App;
 
-pub fn run(state: Shared, cfg: SharedConfig) -> anyhow::Result<()> {
+pub fn run(state: Shared, cfg: SharedConfig, log: Option<SharedLog>) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
-    let mut app = App::default();
+    let mut app = App { proxy_on: log.is_some(), ..App::default() };
     let mut last_draw = Instant::now() - Duration::from_secs(1);
     loop {
         let due = last_draw.elapsed() >= cfg.interval().min(Duration::from_secs(1));
@@ -20,6 +22,9 @@ pub fn run(state: Shared, cfg: SharedConfig) -> anyhow::Result<()> {
             if !app.frozen {
                 let snap = state.read().unwrap().clone();
                 app.ingest(snap);
+                if let Some(log) = &log {
+                    app.ingest_log(log);
+                }
             }
             terminal.draw(|f| overview::draw(f, &app, &cfg))?;
             last_draw = Instant::now();

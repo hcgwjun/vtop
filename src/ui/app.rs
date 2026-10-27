@@ -6,6 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::config::{Config, INTERVALS_MS};
 use crate::history::History;
+use crate::requests::{Record, SharedLog};
 use crate::snapshot::Snapshot;
 
 pub const WINDOWS_MIN: [u8; 3] = [1, 5, 30];
@@ -17,11 +18,23 @@ pub struct App {
     pub frozen: bool,
     pub help: bool,
     pub tab: u8,
+    /// Newest first; refilled from the proxy log every tick.
+    pub requests: Vec<Record>,
+    pub proxy_on: bool,
 }
 
 impl Default for App {
     fn default() -> Self {
-        Self { snapshot: Snapshot::default(), history: History::new(), window_min: 1, frozen: false, help: false, tab: 0 }
+        Self {
+            snapshot: Snapshot::default(),
+            history: History::new(),
+            window_min: 1,
+            frozen: false,
+            help: false,
+            tab: 0,
+            requests: Vec::new(),
+            proxy_on: false,
+        }
     }
 }
 
@@ -46,6 +59,10 @@ impl App {
         self.history.push("power", f(gpu_sum(|g| g.power_w)));
         self.history.push("gpu_temp", f(gpu_avg(|g| g.temp_c)));
         self.snapshot = snap;
+    }
+
+    pub fn ingest_log(&mut self, log: &SharedLog) {
+        self.requests = log.lock().unwrap().latest(crate::requests::CAPACITY);
     }
 
     /// Returns true when the app should quit.
