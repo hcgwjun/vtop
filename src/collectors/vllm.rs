@@ -144,19 +144,22 @@ impl Metrics {
         labels.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
     }
 
-    /// Linear interpolation inside the bucket that crosses quantile `q` of the cumulative counts.
-    pub fn histogram_quantile(&self, name: &str, q: f64) -> Option<f64> {
+    /// Cumulative `(le, count)` ascending; one series per engine is merged by adding counts that share an `le`.
+    fn cumulative(&self, name: &str) -> Vec<(f64, f64)> {
         let mut buckets: Vec<(f64, f64)> = self
             .0
-            .get(&format!("{name}_bucket"))?
-            .iter()
-            .filter_map(|(labels, count)| {
-                let le = labels.iter().find(|(k, _)| k == "le")?.1.parse::<f64>().ok()?;
-                Some((le, *count))
+            .get(&format!("{name}_bucket"))
+            .map(|series| {
+                series
+                    .iter()
+                    .filter_map(|(labels, count)| {
+                        let le = labels.iter().find(|(k, _)| k == "le")?.1.parse::<f64>().ok()?;
+                        Some((le, *count))
+                    })
+                    .collect()
             })
-            .collect();
+            .unwrap_or_default();
         buckets.sort_by(|a, b| a.0.total_cmp(&b.0));
-        // one series per engine: add up the counts that share an `le`
         buckets.dedup_by(|next, prev| {
             let same = next.0 == prev.0;
             if same {
@@ -164,6 +167,25 @@ impl Metrics {
             }
             same
         });
+        buckets
+    }
+
+    /// Per-bucket counts (not cumulative), for drawing a histogram.
+    pub fn buckets(&self, name: &str) -> Vec<(f64, u64)> {
+        let mut prev = 0.0;
+        self.cumulative(name)
+            .into_iter()
+            .map(|(le, c)| {
+                let n = (c - prev).max(0.0) as u64;
+                prev = c;
+                (le, n)
+            })
+            .collect()
+    }
+
+    /// Linear interpolation inside the bucket that crosses quantile `q` of the cumulative counts.
+    pub fn histogram_quantile(&self, name: &str, q: f64) -> Option<f64> {
+        let buckets = self.cumulative(name);
         let total = buckets.last()?.1;
         if total <= 0.0 {
             return None;
@@ -215,7 +237,14 @@ pub fn to_vllm(m: &Metrics, generation: &mut Rate, prompt: &mut Rate, now: Insta
         ttft_p50_ms: m.histogram_quantile("vllm:time_to_first_token_seconds", 0.5).map(|s| s * 1000.0),
         ttft_p99_ms: m.histogram_quantile("vllm:time_to_first_token_seconds", 0.99).map(|s| s * 1000.0),
         preemptions_total: m.get("vllm:num_preemptions_total").map(|v| v as u64),
+        ttft_buckets: nonzero(m.buckets("vllm:time_to_first_token_seconds")),
+        e2e_buckets: nonzero(m.buckets("vllm:e2e_request_latency_seconds")),
     }
+}
+
+/// A histogram with no samples yet is shown as "no samples", so drop it here.
+fn nonzero(b: Vec<(f64, u64)>) -> Vec<(f64, u64)> {
+    if b.iter().any(|(_, c)| *c > 0) { b } else { Vec::new() }
 }
 
 #[cfg(test)]
@@ -276,6 +305,28 @@ mod tests {
         assert_eq!(two.get("vllm:num_requests_running"), Some(6.0), "3 per engine");
         let (p1, p2) = (one.histogram_quantile("vllm:time_to_first_token_seconds", 0.5).unwrap(), two.histogram_quantile("vllm:time_to_first_token_seconds", 0.5).unwrap());
         assert!((p1 - p2).abs() < 1e-9, "same distribution on both engines → same p50: {p1} vs {p2}");
+    }
+
+    #[test]
+    fn buckets_are_per_bucket_counts() {
+        let m = parse(V1);
+        let b = m.buckets("vllm:time_to_first_token_seconds");
+        assert!(b.len() >= 3 && b.last().unwrap().0.is_infinite(), "{b:?}");
+        assert!(b.windows(2).all(|w| w[0].0 < w[1].0), "ascending le");
+        let total: u64 = b.iter().map(|(_, c)| c).sum();
+        assert_eq!(total as f64, m.get("vllm:time_to_first_token_seconds_count").unwrap());
+        let v = to_vllm(&m, &mut Rate::default(), &mut Rate::default(), Instant::now());
+        assert_eq!(v.ttft_buckets, b);
+        assert!(!v.e2e_buckets.is_empty());
+    }
+
+    #[test]
+    fn empty_histogram_gives_no_rows() {
+        let m = parse("vllm:x_bucket{le=\"+Inf\"} 0\nvllm:x_count 0\n");
+        assert_eq!(m.buckets("vllm:x"), vec![(f64::INFINITY, 0)]);
+        assert!(m.buckets("vllm:missing").is_empty());
+        let v = to_vllm(&m, &mut Rate::default(), &mut Rate::default(), Instant::now());
+        assert!(v.ttft_buckets.is_empty(), "all-zero histograms are dropped");
     }
 
     #[test]

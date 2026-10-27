@@ -32,6 +32,9 @@ pub struct Vllm {
     #[allow(dead_code)] // read by the Engine tab (next plan)
     pub ttft_p99_ms: Option<f64>,
     pub preemptions_total: Option<u64>,
+    /// `(le, count in this bucket)` ascending, last `le` is +Inf; empty until the server has samples.
+    pub ttft_buckets: Vec<(f64, u64)>,
+    pub e2e_buckets: Vec<(f64, u64)>,
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -49,6 +52,8 @@ pub struct Gpu {
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct System {
     pub cpu_pct: Option<f64>,
+    /// Per-core %, empty on the first sample.
+    pub cpu_cores: Vec<f64>,
     pub cpu_power_w: Option<f64>,
     pub ane_power_w: Option<f64>,
     pub mem_used: Option<u64>,

@@ -14,3 +14,10 @@ vllm:time_to_first_token_seconds_bucket{le="+Inf",model_name="qwen3-8b"} 40.0
 vllm:time_to_first_token_seconds_count{model_name="qwen3-8b"} 40.0
 foo_unknown 1
 vllm:bar NaN
+# HELP vllm:e2e_request_latency_seconds Histogram of end to end request latency in seconds.
+# TYPE vllm:e2e_request_latency_seconds histogram
+vllm:e2e_request_latency_seconds_bucket{model_name="qwen3-8b",le="1.0"} 5
+vllm:e2e_request_latency_seconds_bucket{model_name="qwen3-8b",le="5.0"} 20
+vllm:e2e_request_latency_seconds_bucket{model_name="qwen3-8b",le="+Inf"} 22
+vllm:e2e_request_latency_seconds_count{model_name="qwen3-8b"} 22
+vllm:e2e_request_latency_seconds_sum{model_name="qwen3-8b"} 60

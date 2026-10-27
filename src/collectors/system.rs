@@ -52,6 +52,11 @@ pub fn proc_infos(sys: &Sys) -> Vec<ProcInfo> {
         .collect()
 }
 
+/// Per-core usage in %, in sysinfo's core order.
+pub fn cores(sys: &Sys) -> Vec<f64> {
+    sys.cpus().iter().map(|c| c.cpu_usage() as f64).collect()
+}
+
 fn to_process(p: &sysinfo::Process) -> Process {
     Process {
         pid: p.pid().as_u32(),
@@ -104,6 +109,7 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
                 let s = &mut snap.system;
                 // sysinfo reports 0% CPU on its first refresh, so the first sample is n/a
                 s.cpu_pct = (!first).then(|| sys.global_cpu_usage() as f64);
+                s.cpu_cores = if first { Vec::new() } else { cores(&sys) };
                 s.mem_used = Some(sys.used_memory());
                 s.mem_total = Some(sys.total_memory());
                 s.swap_used = Some(sys.used_swap());
@@ -144,6 +150,17 @@ mod tests {
         ];
         assert_eq!(find_serving(procs.iter()).map(|p| p.pid), Some(2));
         assert_eq!(find_serving(procs[..1].iter()).map(|p| p.pid), Some(1), "fallback keeps the loose match");
+    }
+
+    #[test]
+    fn cpu_cores_present_after_second_refresh() {
+        let mut sys = Sys::new();
+        refresh(&mut sys);
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        refresh(&mut sys);
+        let cores = cores(&sys);
+        assert_eq!(cores.len(), sys.cpus().len());
+        assert!(cores.iter().all(|c| (0.0..=100.0).contains(c)), "{cores:?}");
     }
 
     #[test]
