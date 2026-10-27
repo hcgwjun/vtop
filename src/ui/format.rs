@@ -49,22 +49,15 @@ pub fn uptime(secs: u64) -> String {
     }
 }
 
-/// Scales `values` into eight glyph heights; `None` draws a space. A flat series draws the lowest glyph.
-pub fn spark(values: &[Option<f32>], ascii: bool) -> String {
-    const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-    const ASCII: [char; 8] = ['.', ':', '-', '=', '+', '*', '#', '#'];
-    let glyphs = if ascii { ASCII } else { BLOCKS };
+/// Min–max scales `values` to 0..=1000 for the Sparkline widget; `None` stays a gap, a flat series is all zero.
+pub fn normalize(values: &[Option<f32>]) -> Vec<Option<u64>> {
     let present = values.iter().flatten();
     let max = present.clone().fold(f32::MIN, |a, &b| a.max(b));
     let min = present.fold(f32::MAX, |a, &b| a.min(b));
     let span = max - min;
     values
         .iter()
-        .map(|v| match v {
-            None => ' ',
-            Some(v) if span <= 0.0 => glyphs[0],
-            Some(v) => glyphs[(((v - min) / span) * 7.0).round() as usize],
-        })
+        .map(|v| v.map(|v| if span <= 0.0 { 0 } else { (((v - min) / span) * 1000.0).round() as u64 }))
         .collect()
 }
 
@@ -109,11 +102,10 @@ mod tests {
     }
 
     #[test]
-    fn spark_scales_to_eight_levels() {
-        assert_eq!(spark(&[Some(0.0), Some(0.5), Some(1.0)], false), "▁▅█");
-        assert_eq!(spark(&[None, Some(1.0)], false), " ▁");
-        assert_eq!(spark(&[Some(0.0), Some(1.0)], true), ".#");
-        assert_eq!(spark(&[Some(3.0), Some(3.0)], false), "▁▁");
+    fn normalize_min_max_to_thousand() {
+        assert_eq!(normalize(&[Some(0.0), Some(0.5), Some(1.0)]), vec![Some(0), Some(500), Some(1000)]);
+        assert_eq!(normalize(&[None, Some(1.0)]), vec![None, Some(0)]);
+        assert_eq!(normalize(&[Some(3.0), Some(3.0)]), vec![Some(0), Some(0)]);
     }
 
     #[test]

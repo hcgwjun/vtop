@@ -8,6 +8,7 @@ use crate::config::SharedConfig;
 use crate::snapshot::{Gpu, Shared};
 
 /// `(in use, allocated)` bytes from `ioreg -r -d 1 -c IOAccelerator`; `None` for any key this chip does not report.
+/// Measured with vllm-metal: "Alloc system memory" moves by the model's size (5.1 → 13.3 GB), "In use" does not.
 pub fn parse_ioreg(text: &str) -> (Option<u64>, Option<u64>) {
     let field = |key: &str| -> Option<u64> {
         let rest = text.split_once(&format!("\"{key}\"="))?.1;
@@ -36,6 +37,8 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
                 }
             };
             let name = sampler.get_soc_info().chip_name.clone();
+            let mut mem = (None, None);
+            let mut tick = 0u32;
             loop {
                 // get_metrics blocks for the interval, so this thread needs no sleep
                 let m = match sampler.get_metrics(cfg.interval().as_millis() as u32) {
@@ -48,7 +51,13 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
                         continue;
                     }
                 };
-                let (mem_used, mem_total) = gpu_memory();
+                // ioreg is a process spawn (~2-3% CPU per second), so refresh it every 5th sample
+                if tick % 5 == 0 {
+                    mem = gpu_memory();
+                }
+                tick += 1;
+                let (_, mem_used) = mem; // Alloc = what Metal/MLX holds; In use ignores it
+                let mem_total = Some(m.memory.ram_total); // unified memory: the GPU can use all of it
                 let mut snap = state.write().unwrap();
                 snap.gpu = vec![Gpu {
                     name: name.clone(),

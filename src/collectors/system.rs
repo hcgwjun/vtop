@@ -23,10 +23,14 @@ pub fn find_serving<'a, I: Iterator<Item = &'a ProcInfo>>(procs: I) -> Option<&'
 pub fn refresh(sys: &mut Sys) {
     sys.refresh_cpu_usage();
     sys.refresh_memory();
+    refresh_processes(sys);
+}
+
+pub fn refresh_processes(sys: &mut Sys) {
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
-        ProcessRefreshKind::nothing().with_cpu().with_memory().with_tasks().with_cmd(UpdateKind::OnlyIfNotSet),
+        ProcessRefreshKind::nothing().with_cpu().with_memory().with_cmd(UpdateKind::OnlyIfNotSet),
     );
 }
 
@@ -64,9 +68,16 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
             let (mut disks, mut nets) = (Disks::new(), Networks::new());
             let mut first = true;
             let mut last = Instant::now();
+            let mut tick = 0u32;
             loop {
                 thread::sleep(cfg.interval());
-                refresh(&mut sys);
+                sys.refresh_cpu_usage();
+                sys.refresh_memory();
+                // walking every process costs a few % CPU per second; the header line can lag 5 ticks
+                if tick % 5 == 0 {
+                    refresh_processes(&mut sys);
+                }
+                tick += 1;
                 disks.refresh(true);
                 nets.refresh(true);
                 let secs = last.elapsed().as_secs_f64();

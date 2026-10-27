@@ -4,10 +4,11 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::symbols::bar;
+use ratatui::widgets::{Block, Clear, Paragraph, Sparkline};
 
 use super::app::App;
-use super::format::{Level, bytes, downsample, level, na, num, spark, uptime};
+use super::format::{Level, bytes, downsample, level, na, normalize, num, uptime};
 use crate::config::Config;
 
 const TABS: [&str; 4] = ["Overview", "Engine", "Requests", "Hardware"];
@@ -57,8 +58,8 @@ fn header_lines(app: &App, cfg: &Config) -> Vec<Line<'static>> {
     }
     let line2 = match &s.process {
         Some(p) => format!(
-            "{}  PID {} · up {} · CPU {:.0}% · RSS {} · {} threads",
-            p.name, p.pid, uptime(p.uptime_s), p.cpu_pct, bytes(p.rss), na(p.threads, |t| t.to_string())
+            "{}  PID {} · up {} · CPU {:.0}% · RSS {}{}",
+            p.name, p.pid, uptime(p.uptime_s), p.cpu_pct, bytes(p.rss), sub(p.threads, |t| format!(" · {t} threads"))
         ),
         None => "process: not found".into(),
     };
@@ -133,7 +134,11 @@ fn cards(app: &App) -> Vec<Card> {
                 (Some(u), None) => bytes(u),
                 _ => "n/a".into(),
             },
-            sub: sub(avg(|g| g.freq_mhz.map(|f| f as f64)), |x| format!("{} MHz", num(x, 0))),
+            sub: format!(
+                "{}{}",
+                if cfg!(target_os = "macos") { "unified · " } else { "" },
+                sub(avg(|g| g.freq_mhz.map(|f| f as f64)), |x| format!("{} MHz", num(x, 0)))
+            ),
             key: "gpu_mem",
             level: match (sum_u(|g| g.mem_used), sum_u(|g| g.mem_total)) {
                 (Some(u), Some(t)) if t > 0 => level(Some(u as f64 / t as f64 * 100.0), 80.0, 95.0),
@@ -154,9 +159,11 @@ fn cards(app: &App) -> Vec<Card> {
 fn overview(f: &mut Frame, app: &App, cfg: &Config, area: Rect) {
     let cols = if area.width >= 100 { 4 } else { 2 };
     let rows = 8 / cols;
+    // cards grow to 6 rows (value / subtitle / 2-row sparkline) when the terminal has room, else 4
+    let card_h = ((area.height.saturating_sub(4)) / rows as u16).clamp(4, 6);
     let [grid, gauges, requests] =
-        Layout::vertical([Constraint::Length(4 * rows as u16), Constraint::Length(1), Constraint::Min(2)]).areas(area);
-    let row_areas = Layout::vertical(vec![Constraint::Length(4); rows]).split(grid);
+        Layout::vertical([Constraint::Length(card_h * rows as u16), Constraint::Length(1), Constraint::Min(2)]).areas(area);
+    let row_areas = Layout::vertical(vec![Constraint::Length(card_h); rows]).split(grid);
     let cards = cards(app);
     for (r, row) in row_areas.iter().enumerate() {
         let col_areas = Layout::horizontal(vec![Constraint::Ratio(1, cols as u32); cols]).split(*row);
@@ -183,6 +190,18 @@ pub fn samples_for(app: &App, cfg: &Config) -> usize {
     app.window_min as usize * 60 * 1000 / tick_ms
 }
 
+const ASCII_BARS: bar::Set = bar::Set {
+    full: "#",
+    seven_eighths: "#",
+    three_quarters: "*",
+    five_eighths: "*",
+    half: "+",
+    three_eighths: "=",
+    one_quarter: "-",
+    one_eighth: ".",
+    empty: " ",
+};
+
 fn card(f: &mut Frame, app: &App, cfg: &Config, c: &Card, area: Rect) {
     let border = match c.level {
         Level::Ok => Style::default().fg(Color::Green),
@@ -193,13 +212,18 @@ fn card(f: &mut Frame, app: &App, cfg: &Config, c: &Card, area: Rect) {
     let block = Block::bordered().title(format!(" {} ", c.title)).border_style(border);
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let width = inner.width as usize;
-    let points = downsample(&app.history.window(c.key, samples_for(app, cfg)), width);
-    let lines = vec![
-        Line::from(vec![c.value.clone().bold(), "  ".into(), c.sub.clone().dim()]),
-        Line::from(spark(&points, cfg.ascii)),
-    ];
-    f.render_widget(Paragraph::new(lines), inner);
+    let tall = inner.height >= 4;
+    let text_rows = if tall { 2 } else { 1 };
+    let [text, graph] = Layout::vertical([Constraint::Length(text_rows), Constraint::Min(1)]).areas(inner);
+    let lines = if tall {
+        vec![Line::from(c.value.clone().bold()), Line::from(c.sub.clone().dim())]
+    } else {
+        vec![Line::from(vec![c.value.clone().bold(), "  ".into(), c.sub.clone().dim()])]
+    };
+    f.render_widget(Paragraph::new(lines), text);
+    let points = normalize(&downsample(&app.history.window(c.key, samples_for(app, cfg)), graph.width as usize));
+    let set = if cfg.ascii { ASCII_BARS } else { bar::NINE_LEVELS };
+    f.render_widget(Sparkline::default().data(points).max(1000).bar_set(set).absent_value_symbol(" "), graph);
 }
 
 fn bar(ratio: f64, width: usize, ascii: bool) -> String {
@@ -302,6 +326,17 @@ mod tests {
         let cfg = Config::new(String::new(), false);
         let mut app = App::default();
         assert!(app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), &cfg));
+    }
+
+    #[test]
+    fn tall_cards_put_subtitle_on_its_own_line() {
+        let snap = Snapshot { vllm: Vllm { generation_tok_s: Some(45.1), ..Default::default() }, ..Default::default() };
+        let out = render(120, 36, snap);
+        let lines: Vec<&str> = out.lines().collect();
+        let i = lines.iter().position(|l| l.contains("45.1")).unwrap();
+        assert!(lines[i + 1].starts_with("│now"), "{:?}", lines[i + 1]);
+        let out = render(80, 24, Snapshot { vllm: Vllm { generation_tok_s: Some(45.1), ..Default::default() }, ..Default::default() });
+        assert!(out.lines().any(|l| l.contains("45.1  now")), "compact cards keep value and subtitle on one line");
     }
 
     #[test]
