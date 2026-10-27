@@ -4,6 +4,8 @@ use std::sync::{Arc, RwLock};
 
 use crate::snapshot::{Shared, Snapshot};
 
+pub mod vllm;
+
 #[cfg(target_os = "macos")]
 pub mod hw_macos;
 
