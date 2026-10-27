@@ -16,8 +16,7 @@ const HINTS: &str = "1-4 tabs  +/- interval  [/] window  Space freeze  r reset  
 
 pub fn draw(f: &mut Frame, app: &App, cfg: &Config) {
     let area = f.area();
-    if area.width < 80 || area.height < 24 {
-        f.render_widget(Paragraph::new("Terminal too small: vtop needs at least 80x24"), area);
+    if area.height < 3 || area.width < 10 {
         return;
     }
     let [header, body, hints] = Layout::vertical([Constraint::Length(2), Constraint::Min(1), Constraint::Length(1)]).areas(area);
@@ -157,19 +156,25 @@ fn cards(app: &App) -> Vec<Card> {
 }
 
 fn overview(f: &mut Frame, app: &App, cfg: &Config, area: Rect) {
-    let cols = if area.width >= 100 { 4 } else { 2 };
+    // small terminals degrade instead of refusing: 4 → 2 → 1 columns, cards 6 → 3 rows, then rows are cut
+    let cols = if area.width >= 100 { 4 } else if area.width >= 50 { 2 } else { 1 };
     let rows = 8 / cols;
-    // cards grow to 6 rows (value / subtitle / 2-row sparkline) when the terminal has room, else 4
-    let card_h = ((area.height.saturating_sub(4)) / rows as u16).clamp(4, 6);
+    let card_h = ((area.height.saturating_sub(4)) / rows as u16).clamp(3, 6);
+    let grid_h = (card_h * rows as u16).min(area.height);
     let [grid, gauges, requests] =
-        Layout::vertical([Constraint::Length(card_h * rows as u16), Constraint::Length(1), Constraint::Min(2)]).areas(area);
-    let row_areas = Layout::vertical(vec![Constraint::Length(card_h); rows]).split(grid);
+        Layout::vertical([Constraint::Length(grid_h), Constraint::Max(1), Constraint::Min(0)]).areas(area);
+    // only split the rows that fit: the solver would otherwise shrink every row evenly below a usable height
+    let fit = ((grid_h / card_h) as usize).min(rows);
+    let row_areas = Layout::vertical(vec![Constraint::Length(card_h); fit]).split(grid);
     let cards = cards(app);
     for (r, row) in row_areas.iter().enumerate() {
         let col_areas = Layout::horizontal(vec![Constraint::Ratio(1, cols as u32); cols]).split(*row);
         for (c, cell) in col_areas.iter().enumerate() {
             card(f, app, cfg, &cards[r * cols + c], *cell);
         }
+    }
+    if gauges.height == 0 {
+        return;
     }
     let sys = &app.snapshot.system;
     let cpu = na(sys.cpu_pct, |x| format!("{} {} %", bar(x / 100.0, 12, cfg.ascii), num(x, 0)));
@@ -214,13 +219,16 @@ fn card(f: &mut Frame, app: &App, cfg: &Config, c: &Card, area: Rect) {
     f.render_widget(block, area);
     let tall = inner.height >= 4;
     let text_rows = if tall { 2 } else { 1 };
-    let [text, graph] = Layout::vertical([Constraint::Length(text_rows), Constraint::Min(1)]).areas(inner);
+    let [text, graph] = Layout::vertical([Constraint::Length(text_rows), Constraint::Min(0)]).areas(inner);
     let lines = if tall {
         vec![Line::from(c.value.clone().bold()), Line::from(c.sub.clone().dim())]
     } else {
         vec![Line::from(vec![c.value.clone().bold(), "  ".into(), c.sub.clone().dim()])]
     };
     f.render_widget(Paragraph::new(lines), text);
+    if graph.height == 0 {
+        return;
+    }
     let points = normalize(&downsample(&app.history.window(c.key, samples_for(app, cfg)), graph.width as usize));
     let set = if cfg.ascii { ASCII_BARS } else { bar::NINE_LEVELS };
     f.render_widget(Sparkline::default().data(points).max(1000).bar_set(set).absent_value_symbol(" "), graph);
@@ -340,8 +348,13 @@ mod tests {
     }
 
     #[test]
-    fn too_small_terminal_shows_hint() {
-        assert!(render(60, 20, Snapshot::default()).contains("80x24"));
+    fn small_terminals_still_render_cards() {
+        let snap = || Snapshot { vllm: Vllm { generation_tok_s: Some(45.1), ..Default::default() }, ..Default::default() };
+        assert!(render(60, 20, snap()).contains("45.1"), "two columns at 60 wide");
+        assert!(render(40, 12, snap()).contains("45.1"), "one column at 40 wide");
+        for (w, h) in [(20, 5), (10, 3), (5, 2), (120, 1)] {
+            render(w, h, snap()); // must not panic
+        }
     }
 
     #[test]

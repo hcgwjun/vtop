@@ -24,7 +24,7 @@
 
 1. `/metrics`에 `NaN`/`+Inf` 값이나 모르는 줄이 섞여 있어도 파서가 나머지를 정상 처리해야 한다. → Task 2 테스트 `parse_skips_unknown_and_nan`.
 2. vLLM 재시작으로 카운터가 줄면 tok/s가 음수나 거대값이 아니라 `None`으로 한 번 비었다가 다시 채워져야 한다. → Task 2 `rate_resets_on_counter_decrease`.
-3. 터미널이 80×24보다 작으면 패닉 없이 안내 한 줄만 그려야 한다. → Task 7 `too_small_terminal_shows_hint`.
+3. 터미널이 작아도 패닉 없이 열·행을 줄여 그린다. → `small_terminals_still_render_cards`.
 4. `ioreg` 출력에 기대한 키가 없으면(다른 세대 칩) GPU 메모리만 `None`이고 나머지 GPU 값은 살아 있어야 한다. → Task 5 `ioreg_missing_keys_gives_none`.
 5. `--url`에 scheme이 없거나 끝에 `/`가 있어도 `/metrics` 요청 URL이 올바라야 한다. → Task 3 `metrics_url_normalizes`.
 
