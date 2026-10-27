@@ -142,7 +142,7 @@ fn cards(app: &App) -> Vec<Card> {
         },
         Card {
             title: "Power",
-            value: na(avg(|g| g.power_w).map(|p| p * gpus.len() as f64), |x| format!("{} W", num(x, 0))),
+            value: na(avg(|g| g.power_w).map(|p| p * gpus.len() as f64), |x| format!("{} W", num(x, 1))),
             sub: power_limit.unwrap_or_else(|| sub(s.system.cpu_power_w, |x| format!("cpu {} W", num(x, 1)))),
             key: "power",
             level: Level::Unknown,

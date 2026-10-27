@@ -251,3 +251,23 @@ mod url_tests {
         assert_eq!(metrics_url("https://h"), "https://h/metrics");
     }
 }
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+
+    /// Real vllm-metal 0.x `/metrics` capture (PaddleOCR-VL, after a few requests, prefix caching off).
+    #[test]
+    fn live_vllm_metal_capture_maps() {
+        let m = parse(include_str!("../../tests/fixtures/metrics_live_vllm_metal.txt"));
+        let v = to_vllm(&m, &mut Rate::default(), &mut Rate::default(), Instant::now());
+        assert_eq!(v.model.as_deref(), Some("PaddlePaddle/PaddleOCR-VL-1.6"));
+        assert_eq!(v.running, Some(0));
+        assert_eq!(v.waiting, Some(0));
+        assert_eq!(v.kv_cache_usage, Some(0.0));
+        assert_eq!(v.preemptions_total, Some(0));
+        assert_eq!(v.prefix_cache_hit_rate, None, "prefix caching disabled → no queries → n/a");
+        assert!(v.ttft_p50_ms.is_some_and(|t| t > 0.0), "{:?}", v.ttft_p50_ms);
+        assert!(m.get("vllm:generation_tokens_total").is_some_and(|t| t > 0.0));
+    }
+}
