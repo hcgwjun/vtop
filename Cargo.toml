@@ -2,6 +2,13 @@
 name = "vtop"
 version = "0.1.0"
 edition = "2024"
+description = "Terminal monitor for vLLM: server metrics, GPU/CPU hardware and per-request traces on one screen (macOS and Linux)"
+license = "MIT"
+repository = "https://github.com/hcgwjun/vtop"
+homepage = "https://github.com/hcgwjun/vtop"
+readme = "README.md"
+keywords = ["vllm", "llm", "monitor", "tui", "gpu"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0.104"
@@ -35,3 +42,7 @@ panic = "abort"
 lto = true
 codegen-units = 1
 strip = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"

@@ -4,11 +4,21 @@ A single-binary terminal monitor for [vLLM](https://github.com/vllm-project/vllm
 
 ## 1. Install vtop
 
-Needs a Rust toolchain (`curl https://sh.rustup.rs -sSf | sh`).
+Prebuilt binaries for macOS (Apple Silicon) and Linux (x86_64, aarch64):
 
 ```sh
-cargo install --path .
+# Homebrew (macOS, Linux)
+brew install hcgwjun/tap/vtop
+
+# or the installer script (puts vtop in ~/.cargo/bin)
+curl -LsSf https://github.com/hcgwjun/vtop/releases/latest/download/vtop-installer.sh | sh
+
+# or with a Rust toolchain
+cargo install vtop            # from crates.io
+cargo install --path .        # from this checkout
 ```
+
+Archives for each platform are on the [releases page](https://github.com/hcgwjun/vtop/releases).
 
 - macOS: nothing else. Apple Silicon power and temperature come from the [macmon](https://github.com/vladkens/macmon) library compiled in — no sudo, no extra tools.
 - Linux: an NVIDIA driver (NVML). Without one the GPU cards show `n/a`.

@@ -202,7 +202,7 @@ fn overview(f: &mut Frame, app: &App, cfg: &Config, area: Rect) {
 
 /// History slots covering the selected window: the UI ingests once per `min(interval, 1 s)`.
 pub fn samples_for(app: &App, cfg: &Config) -> usize {
-    let tick_ms = cfg.interval().as_millis().min(1000).max(1) as usize;
+    let tick_ms = cfg.interval().as_millis().clamp(1, 1000) as usize;
     app.window_min as usize * 60 * 1000 / tick_ms
 }
 

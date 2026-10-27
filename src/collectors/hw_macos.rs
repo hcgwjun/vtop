@@ -53,7 +53,7 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
                     }
                 };
                 // ioreg is a process spawn (~2-3% CPU per second), so refresh it every 5th sample
-                if tick % 5 == 0 {
+                if tick.is_multiple_of(5) {
                     mem = gpu_memory();
                 }
                 tick += 1;

@@ -78,7 +78,7 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
                 sys.refresh_cpu_usage();
                 sys.refresh_memory();
                 // walking every process costs a few % CPU per second; the header line can lag 5 ticks
-                if tick % 5 == 0 {
+                if tick.is_multiple_of(5) {
                     refresh_processes(&mut sys);
                 }
                 tick += 1;
