@@ -26,6 +26,10 @@ struct Args {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let cfg = config::Config::new(args.url, args.ascii);
+    let log = requests::SharedLog::default();
+    if let Some(bind) = &args.proxy {
+        proxy::server::spawn(bind, cfg.url.clone(), log.clone())?;
+    }
     let state = collectors::spawn(cfg.clone());
     ui::run(state, cfg)
 }
