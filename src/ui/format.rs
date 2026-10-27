@@ -1,0 +1,120 @@
+//! Text formatting shared by every screen: n/a handling, units, sparklines and status levels.
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Level {
+    Ok,
+    Warn,
+    Crit,
+    Unknown,
+}
+
+pub fn na<T>(v: Option<T>, f: impl Fn(T) -> String) -> String {
+    v.map(f).unwrap_or_else(|| "n/a".to_string())
+}
+
+pub fn bytes(b: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    if b < 1024 {
+        return format!("{b} B");
+    }
+    let exp = ((b as f64).log2() / 10.0).floor().min(4.0) as usize;
+    format!("{:.1} {}", b as f64 / 1024f64.powi(exp as i32), UNITS[exp])
+}
+
+/// Thousands separators on the integer part, `digits` decimals.
+pub fn num(f: f64, digits: usize) -> String {
+    let s = format!("{f:.digits$}");
+    let (int, frac) = s.split_once('.').map_or((s.as_str(), ""), |(i, f)| (i, f));
+    let (sign, int) = int.strip_prefix('-').map_or(("", int), |i| ("-", i));
+    let mut out = String::new();
+    for (i, c) in int.chars().enumerate() {
+        if i > 0 && (int.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    if frac.is_empty() { format!("{sign}{out}") } else { format!("{sign}{out}.{frac}") }
+}
+
+pub fn uptime(secs: u64) -> String {
+    let (d, h, m) = (secs / 86400, secs % 86400 / 3600, secs % 3600 / 60);
+    if d > 0 {
+        format!("{d}d {h}h")
+    } else if h > 0 {
+        format!("{h}h{m:02}m")
+    } else if m > 0 {
+        format!("{m}m{:02}s", secs % 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
+/// Scales `values` into eight glyph heights; `None` draws a space. A flat series draws the lowest glyph.
+pub fn spark(values: &[Option<f32>], ascii: bool) -> String {
+    const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    const ASCII: [char; 8] = ['.', ':', '-', '=', '+', '*', '#', '#'];
+    let glyphs = if ascii { ASCII } else { BLOCKS };
+    let present = values.iter().flatten();
+    let max = present.clone().fold(f32::MIN, |a, &b| a.max(b));
+    let min = present.fold(f32::MAX, |a, &b| a.min(b));
+    let span = max - min;
+    values
+        .iter()
+        .map(|v| match v {
+            None => ' ',
+            Some(v) if span <= 0.0 => glyphs[0],
+            Some(v) => glyphs[(((v - min) / span) * 7.0).round() as usize],
+        })
+        .collect()
+}
+
+pub fn level(v: Option<f64>, warn: f64, crit: f64) -> Level {
+    match v {
+        None => Level::Unknown,
+        Some(v) if v >= crit => Level::Crit,
+        Some(v) if v >= warn => Level::Warn,
+        Some(_) => Level::Ok,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bytes_formats() {
+        assert_eq!(bytes(17_079_123_968), "15.9 GB");
+        assert_eq!(bytes(536_870_912), "512.0 MB");
+        assert_eq!(bytes(0), "0 B");
+    }
+
+    #[test]
+    fn uptime_formats() {
+        assert_eq!(uptime(45), "45s");
+        assert_eq!(uptime(3 * 3600 + 12 * 60), "3h12m");
+        assert_eq!(uptime(2 * 86400 + 3 * 3600), "2d 3h");
+    }
+
+    #[test]
+    fn spark_scales_to_eight_levels() {
+        assert_eq!(spark(&[Some(0.0), Some(0.5), Some(1.0)], false), "▁▅█");
+        assert_eq!(spark(&[None, Some(1.0)], false), " ▁");
+        assert_eq!(spark(&[Some(0.0), Some(1.0)], true), ".#");
+        assert_eq!(spark(&[Some(3.0), Some(3.0)], false), "▁▁");
+    }
+
+    #[test]
+    fn level_thresholds() {
+        assert_eq!(level(Some(79.9), 80.0, 95.0), Level::Ok);
+        assert_eq!(level(Some(80.0), 80.0, 95.0), Level::Warn);
+        assert_eq!(level(Some(95.0), 80.0, 95.0), Level::Crit);
+        assert_eq!(level(None, 80.0, 95.0), Level::Unknown);
+    }
+
+    #[test]
+    fn na_and_num() {
+        assert_eq!(na(None::<f64>, |v| num(v, 1)), "n/a");
+        assert_eq!(na(Some(1234.56), |v| num(v, 1)), "1,234.6");
+        assert_eq!(num(7.0, 0), "7");
+    }
+}

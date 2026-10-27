@@ -1,3 +1,5 @@
+pub mod format;
+
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode};
