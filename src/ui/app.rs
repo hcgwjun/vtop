@@ -2,7 +2,7 @@
 
 use std::sync::atomic::Ordering;
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::config::{Config, INTERVALS_MS};
 use crate::history::History;
@@ -61,6 +61,7 @@ impl App {
         };
         match key.code {
             KeyCode::Char('q') => return true,
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
             KeyCode::Esc if self.help => self.help = false,
             KeyCode::Esc => return true,
             KeyCode::Char(c @ '1'..='4') => self.tab = c as u8 - b'1',

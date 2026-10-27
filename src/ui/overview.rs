@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
 use super::app::App;
-use super::format::{Level, bytes, level, na, num, spark, uptime};
+use super::format::{Level, bytes, downsample, level, na, num, spark, uptime};
 use crate::config::Config;
 
 const TABS: [&str; 4] = ["Overview", "Engine", "Requests", "Hardware"];
@@ -42,23 +42,18 @@ fn header_lines(app: &App, cfg: &Config) -> Vec<Line<'static>> {
     } else {
         ("LIVE", Color::Green)
     };
-    let mut line1 = vec![
-        "vtop".bold(),
-        "  ".into(),
-        s.vllm.model.clone().unwrap_or_else(|| "no model".into()).into(),
-        "  ".into(),
-        cfg.url.clone().dim(),
-        "  ".into(),
-        Span::styled(state, Style::default().fg(color).bold()),
-        "  ".into(),
-    ];
+    // status and toggles sit before the tabs so they survive an 80-column terminal
+    let mut line1 = vec!["vtop".bold()];
     for (i, name) in TABS.iter().enumerate() {
         let label = format!("{} {}", i + 1, name);
-        line1.push(if i as u8 == app.tab { format!("[{label}]").bold() } else { format!(" {label} ").dim() });
+        line1.push(" ".into());
+        line1.push(if i as u8 == app.tab { format!("[{label}]").bold() } else { label.dim() });
     }
-    line1.push(format!("  ⟳{:.1}s  {}m", interval.as_secs_f64(), app.window_min).dim());
+    line1.push(" ".into());
+    line1.push(Span::styled(state, Style::default().fg(color).bold()));
+    line1.push(format!(" ⟳{:.1}s {}m", interval.as_secs_f64(), app.window_min).dim());
     if app.frozen {
-        line1.push("  FROZEN".yellow().bold());
+        line1.push(" FROZEN".yellow().bold());
     }
     let line2 = match &s.process {
         Some(p) => format!(
@@ -67,7 +62,13 @@ fn header_lines(app: &App, cfg: &Config) -> Vec<Line<'static>> {
         ),
         None => "process: not found".into(),
     };
-    let mut line2 = vec![line2.dim()];
+    let mut line2 = vec![
+        s.vllm.model.clone().unwrap_or_else(|| "no model".into()).into(),
+        "  ".into(),
+        cfg.url.clone().dim(),
+        "   ".into(),
+        line2.dim(),
+    ];
     if let Some(e) = s.errors.last() {
         line2.push("   ".into());
         line2.push(e.clone().red().dim());
@@ -176,6 +177,12 @@ fn overview(f: &mut Frame, app: &App, cfg: &Config, area: Rect) {
     );
 }
 
+/// History slots covering the selected window: the UI ingests once per `min(interval, 1 s)`.
+pub fn samples_for(app: &App, cfg: &Config) -> usize {
+    let tick_ms = cfg.interval().as_millis().min(1000).max(1) as usize;
+    app.window_min as usize * 60 * 1000 / tick_ms
+}
+
 fn card(f: &mut Frame, app: &App, cfg: &Config, c: &Card, area: Rect) {
     let border = match c.level {
         Level::Ok => Style::default().fg(Color::Green),
@@ -187,7 +194,7 @@ fn card(f: &mut Frame, app: &App, cfg: &Config, c: &Card, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
     let width = inner.width as usize;
-    let points = app.history.window(c.key, width.min(app.window_min as usize * 60 * 2));
+    let points = downsample(&app.history.window(c.key, samples_for(app, cfg)), width);
     let lines = vec![
         Line::from(vec![c.value.clone().bold(), "  ".into(), c.sub.clone().dim()]),
         Line::from(spark(&points, cfg.ascii)),
@@ -265,6 +272,36 @@ mod tests {
         for needle in ["45.1", "3 run · 0 wait", "61 %", "96 %", "59 °C", "n/a", "process: not found"] {
             assert!(out.contains(needle), "missing {needle:?} in:\n{out}");
         }
+    }
+
+    #[test]
+    fn frozen_marker_visible_at_80_columns() {
+        let cfg = Config::new("http://127.0.0.1:8000".into(), false);
+        let mut app = App::default();
+        app.frozen = true;
+        let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        t.draw(|f| draw(f, &app, &cfg)).unwrap();
+        let buf = t.backend().buffer();
+        let line1: String = (0..80).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert!(line1.contains("FROZEN") && line1.contains("1.0s"), "{line1}");
+    }
+
+    #[test]
+    fn window_key_changes_sample_count() {
+        let cfg = Config::new(String::new(), false);
+        let mut app = App::default();
+        assert_eq!(samples_for(&app, &cfg), 60);
+        app.on_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE), &cfg);
+        assert_eq!(samples_for(&app, &cfg), 300);
+        app.on_key(KeyEvent::new(KeyCode::Char('-'), KeyModifiers::NONE), &cfg); // 0.5 s interval → 0.5 s ticks
+        assert_eq!(samples_for(&app, &cfg), 600);
+    }
+
+    #[test]
+    fn ctrl_c_quits() {
+        let cfg = Config::new(String::new(), false);
+        let mut app = App::default();
+        assert!(app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), &cfg));
     }
 
     #[test]

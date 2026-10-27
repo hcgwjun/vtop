@@ -34,28 +34,35 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
             let (mut generation, mut prompt) = (Rate::default(), Rate::default());
             let mut failures = 0u32;
             let mut model: Option<String> = None;
+            let mut model_tried = false; // /v1/models is asked once per connection, never on every tick
+            let client = reqwest::blocking::Client::new();
             loop {
                 let timeout = cfg.interval().min(std::time::Duration::from_secs(5));
-                let client = reqwest::blocking::Client::builder().timeout(timeout).build();
-                let body = client.and_then(|c| c.get(&url).send()).and_then(|r| r.error_for_status()).and_then(|r| r.text());
-                let mut snap = state.write().unwrap();
-                match body {
-                    Ok(text) => {
-                        failures = 0;
-                        let now = Instant::now();
-                        let mut v = to_vllm(&parse(&text), &mut generation, &mut prompt, now);
-                        if v.model.is_none() {
-                            if model.is_none() {
-                                model = model_from_api(&models_url, timeout);
-                            }
-                            v.model = model.clone();
+                let body = client.get(&url).timeout(timeout).send().and_then(|r| r.error_for_status()).and_then(|r| r.text());
+                // everything slow (HTTP, parsing) happens before the lock is taken
+                let result = body.map(|text| {
+                    failures = 0;
+                    let now = Instant::now();
+                    let mut v = to_vllm(&parse(&text), &mut generation, &mut prompt, now);
+                    if v.model.is_none() {
+                        if !model_tried {
+                            model_tried = true;
+                            model = model_from_api(&client, &models_url, timeout);
                         }
+                        v.model = model.clone();
+                    }
+                    (v, now)
+                });
+                let mut snap = state.write().unwrap();
+                match result {
+                    Ok((v, now)) => {
                         snap.vllm = v;
                         snap.sampled_at = Some(now);
                         snap.errors.retain(|e| !e.starts_with("vllm:"));
                     }
                     Err(e) => {
                         failures += 1;
+                        model_tried = false;
                         if failures >= 3 {
                             snap.vllm = Vllm::default();
                             snap.errors.retain(|e| !e.starts_with("vllm:"));
@@ -70,8 +77,8 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
         .expect("spawn vllm thread");
 }
 
-fn model_from_api(url: &str, timeout: std::time::Duration) -> Option<String> {
-    let v: serde_json::Value = reqwest::blocking::Client::builder().timeout(timeout).build().ok()?.get(url).send().ok()?.json().ok()?;
+fn model_from_api(client: &reqwest::blocking::Client, url: &str, timeout: std::time::Duration) -> Option<String> {
+    let v: serde_json::Value = client.get(url).timeout(timeout).send().ok()?.json().ok()?;
     v["data"][0]["id"].as_str().map(str::to_string)
 }
 
@@ -164,8 +171,11 @@ impl Rate {
 }
 
 pub fn to_vllm(m: &Metrics, generation: &mut Rate, prompt: &mut Rate, now: Instant) -> Vllm {
-    let hits = m.get("vllm:prefix_cache_hits");
-    let queries = m.get("vllm:prefix_cache_queries").filter(|q| *q > 0.0);
+    // prometheus_client appends _total to counters; older vLLM prefixed these with gpu_
+    let hits = m.first_of(&["vllm:prefix_cache_hits_total", "vllm:prefix_cache_hits", "vllm:gpu_prefix_cache_hits_total"]);
+    let queries = m
+        .first_of(&["vllm:prefix_cache_queries_total", "vllm:prefix_cache_queries", "vllm:gpu_prefix_cache_queries_total"])
+        .filter(|q| *q > 0.0);
     Vllm {
         reachable: true,
         model: m.label("vllm:num_requests_running", "model_name"),

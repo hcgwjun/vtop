@@ -21,7 +21,11 @@ macmon = { version = "0.10.0", default-features = false }
 [target.'cfg(target_os = "linux")'.dependencies]
 nvml-wrapper = "0.13.0"
 
+[profile.dev]
+panic = "abort"
+
 [profile.release]
+panic = "abort"
 lto = true
 codegen-units = 1
 strip = true

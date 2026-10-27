@@ -44,12 +44,13 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
                         }
                     }
                 }
-                let mut snap = state.write().unwrap();
+                let mut guard = state.write().unwrap();
+                let snap = &mut *guard;
                 snap.gpu = gpus;
                 for p in snap.top_processes.iter_mut().chain(snap.process.iter_mut()) {
                     p.gpu_mem = proc_mem.get(&p.pid).copied();
                 }
-                drop(snap);
+                drop(guard);
                 thread::sleep(cfg.interval());
             }
         })

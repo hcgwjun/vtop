@@ -68,6 +68,19 @@ pub fn spark(values: &[Option<f32>], ascii: bool) -> String {
         .collect()
 }
 
+/// Squeezes `values` into `width` buckets keeping each bucket's max, so spikes survive a long window.
+pub fn downsample(values: &[Option<f32>], width: usize) -> Vec<Option<f32>> {
+    if values.len() <= width || width == 0 {
+        return values.to_vec();
+    }
+    (0..width)
+        .map(|i| {
+            let (a, b) = (i * values.len() / width, (i + 1) * values.len() / width);
+            values[a..b.max(a + 1)].iter().flatten().copied().reduce(f32::max)
+        })
+        .collect()
+}
+
 pub fn level(v: Option<f64>, warn: f64, crit: f64) -> Level {
     match v {
         None => Level::Unknown,
@@ -101,6 +114,14 @@ mod tests {
         assert_eq!(spark(&[None, Some(1.0)], false), " ▁");
         assert_eq!(spark(&[Some(0.0), Some(1.0)], true), ".#");
         assert_eq!(spark(&[Some(3.0), Some(3.0)], false), "▁▁");
+    }
+
+    #[test]
+    fn downsample_keeps_bucket_max() {
+        let v = [Some(1.0), Some(5.0), Some(2.0), Some(3.0)];
+        assert_eq!(downsample(&v, 2), vec![Some(5.0), Some(3.0)]);
+        assert_eq!(downsample(&[None, None, Some(1.0)], 1), vec![Some(1.0)]);
+        assert_eq!(downsample(&v, 8), v.to_vec());
     }
 
     #[test]
