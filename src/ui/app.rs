@@ -65,11 +65,8 @@ impl App {
         self.history.push("gen_tok_s", f(v.generation_tok_s));
         self.history.push("prompt_tok_s", f(v.prompt_tok_s));
         self.history.push("running", v.running.map(|x| x as f32));
-        self.history.push("waiting", v.waiting.map(|x| x as f32));
         self.history.push("disk_r", f(snap.system.disk_read_bps));
-        self.history.push("disk_w", f(snap.system.disk_write_bps));
         self.history.push("net_rx", f(snap.system.net_rx_bps));
-        self.history.push("net_tx", f(snap.system.net_tx_bps));
         self.history.push("kv", f(v.kv_cache_usage));
         self.history.push("prefix_hit", f(v.prefix_cache_hit_rate));
         self.history.push("gpu_util", f(gpu_avg(|g| g.utilization)));

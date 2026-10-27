@@ -42,11 +42,17 @@ pub fn draw(f: &mut Frame, app: &App, cfg: &Config, area: Rect) {
     histogram(f, cfg, right, "E2E latency", &v.e2e_buckets, None, None);
 }
 
-/// Title line, then one bar per bucket from the first non-empty one; counts are since server start.
+/// Title line, then one bar per bucket; counts are since server start.
 fn histogram(f: &mut Frame, cfg: &Config, area: Rect, title: &'static str, buckets: &[(f64, u64)], p50_ms: Option<f64>, p99_ms: Option<f64>) {
     if area.height == 0 || area.width < 4 {
         return;
     }
+    f.render_widget(Paragraph::new(histogram_lines(cfg, area.width, area.height, title, buckets, p50_ms, p99_ms)), area);
+}
+
+/// At most `height` lines of at most `width` cells. When the rows do not fit, the window is centred on the
+/// largest bucket so the bulk of the distribution stays visible.
+fn histogram_lines(cfg: &Config, width: u16, height: u16, title: &'static str, buckets: &[(f64, u64)], p50_ms: Option<f64>, p99_ms: Option<f64>) -> Vec<Line<'static>> {
     let mut head = vec![title.bold()];
     if let Some(p) = p50_ms {
         head.push(format!("  p50 {} ms", num(p, 0)).dim());
@@ -59,19 +65,28 @@ fn histogram(f: &mut Frame, cfg: &Config, area: Rect, title: &'static str, bucke
     let rows = hist_rows(buckets);
     if rows.is_empty() {
         lines.push(Line::from("no samples yet".dim()));
-    } else {
-        let max = rows.iter().map(|r| r.1).max().unwrap_or(1).max(1) as f64;
-        let count_w = rows.iter().map(|r| num(r.1 as f64, 0).len()).max().unwrap_or(1);
-        let bar_w = (area.width as usize).saturating_sub(11 + 2 + 2 + count_w).max(1);
-        for (label, count) in rows.iter().take(area.height as usize - 1) {
-            lines.push(Line::from(vec![
-                format!("{label:>11}  ").dim(),
-                bar(*count as f64 / max, bar_w, cfg.ascii).into(),
-                format!("  {:>count_w$}", num(*count as f64, 0)).into(),
-            ]));
-        }
+        return lines;
     }
-    f.render_widget(Paragraph::new(lines), area);
+    let avail = (height as usize).saturating_sub(1);
+    let start = if rows.len() > avail {
+        let peak = rows.iter().enumerate().max_by_key(|(_, r)| r.1).map_or(0, |(i, _)| i);
+        peak.saturating_sub(avail / 2).min(rows.len() - avail)
+    } else {
+        0
+    };
+    let rows = &rows[start..(start + avail).min(rows.len())];
+    let max = rows.iter().map(|r| r.1).max().unwrap_or(1).max(1) as f64;
+    let label_w = rows.iter().map(|r| r.0.chars().count()).max().unwrap_or(1);
+    let count_w = rows.iter().map(|r| num(r.1 as f64, 0).len()).max().unwrap_or(1);
+    let bar_w = (width as usize).saturating_sub(label_w + 2 + 2 + count_w).max(1);
+    for (label, count) in rows {
+        lines.push(Line::from(vec![
+            format!("{label:>label_w$}  ").dim(),
+            bar(*count as f64 / max, bar_w, cfg.ascii).into(),
+            format!("  {:>count_w$}", num(*count as f64, 0)).into(),
+        ]));
+    }
+    lines
 }
 
 /// `(label, count)` from the first to the last non-empty bucket: "0.25–0.5 s", "1–2.5 s", ">10 s".
@@ -139,6 +154,31 @@ mod tests {
         }
         assert!(!out.contains("0–0.25 s"), "leading empty buckets are hidden\n{out}");
         assert!(!out.contains("1–2 s"), "trailing empty buckets are hidden\n{out}");
+    }
+
+    fn widths(lines: &[ratatui::text::Line]) -> Vec<usize> {
+        lines.iter().map(|l| l.spans.iter().map(|s| s.content.chars().count()).sum()).collect()
+    }
+
+    #[test]
+    fn long_labels_keep_counts_inside_the_pane() {
+        let cfg = Config::new("http://x".into(), false);
+        let buckets = [(0.001, 1), (0.005, 1204), (0.01, 3), (f64::INFINITY, 0)];
+        let lines = super::histogram_lines(&cfg, 40, 10, "TTFT", &buckets, None, None);
+        let text: Vec<String> = lines.iter().map(|l| l.spans.iter().map(|s| s.content.to_string()).collect()).collect();
+        assert!(text.iter().any(|t| t.contains("0.001–0.005 s") && t.ends_with("1,204")), "{text:?}");
+        assert!(widths(&lines).iter().all(|w| *w <= 40), "{:?}", widths(&lines));
+    }
+
+    #[test]
+    fn cropping_keeps_the_largest_bucket_visible() {
+        let cfg = Config::new("http://x".into(), false);
+        let mut buckets: Vec<(f64, u64)> = (1..=20).map(|i| (i as f64, 1)).collect();
+        buckets[15].1 = 500;
+        let lines = super::histogram_lines(&cfg, 60, 6, "E2E", &buckets, None, None);
+        assert_eq!(lines.len(), 6, "title + 5 rows");
+        let text: Vec<String> = lines.iter().map(|l| l.spans.iter().map(|s| s.content.to_string()).collect()).collect();
+        assert!(text.iter().any(|t| t.contains("15–16 s") && t.ends_with("500")), "{text:?}");
     }
 
     #[test]

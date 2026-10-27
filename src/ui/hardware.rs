@@ -33,7 +33,7 @@ pub fn draw(f: &mut Frame, app: &App, cfg: &Config, area: Rect) {
     io_block(f, app, cfg, disk, "Disk", "R", s.system.disk_read_bps, "W", s.system.disk_write_bps, "disk_r");
     io_block(f, app, cfg, net, "Net", "↓", s.system.net_rx_bps, "↑", s.system.net_tx_bps, "net_rx");
 
-    let procs = carve(&mut rest, 1 + s.top_processes.len().min(MAX_PROCS) as u16);
+    let procs = carve(&mut rest, 1 + s.top_processes.len().clamp(1, MAX_PROCS) as u16);
     f.render_widget(Paragraph::new(process_lines(app)), procs);
 }
 
@@ -55,7 +55,8 @@ fn gpu_lines(app: &App) -> Vec<Line<'static>> {
     if gpus.is_empty() {
         return vec![Line::from("GPU".bold()), Line::from("no GPU".dim())];
     }
-    let mut lines = vec![Line::from(format!("{:<24} {:>5}  {:<19} {:<15} {:>6}  {:>9}", "GPU", "UTIL", "MEM", "POWER", "TEMP", "CLOCK").dim())];
+    // 18+5+19+13+6+9 plus five gaps = 75 columns, so the row fits an 80-column terminal
+    let mut lines = vec![Line::from(format!("{:<18} {:>5} {:<19} {:<13} {:>6} {:>9}", "GPU", "UTIL", "MEM", "POWER", "TEMP", "CLOCK").dim())];
     for g in gpus {
         let mem = match (g.mem_used, g.mem_total) {
             (Some(u), Some(t)) => format!("{} / {}", bytes(u), bytes(t)),
@@ -68,8 +69,8 @@ fn gpu_lines(app: &App) -> Vec<Line<'static>> {
             _ => "n/a".into(),
         };
         lines.push(Line::from(format!(
-            "{:<24} {:>5}  {:<19} {:<15} {:>6}  {:>9}",
-            truncate(&g.name, 24),
+            "{:<18} {:>5} {:<19} {:<13} {:>6} {:>9}",
+            truncate(&g.name, 18),
             na(g.utilization, |u| format!("{} %", num(u, 0))),
             mem,
             power,
@@ -134,6 +135,9 @@ fn io_block(f: &mut Frame, app: &App, cfg: &Config, area: Rect, title: &'static 
 
 fn process_lines(app: &App) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(format!("{:<7} {:<20} {:>6} {:>10} {:>10}", "PID", "NAME", "CPU %", "RSS", "GPU MEM").dim())];
+    if app.snapshot.top_processes.is_empty() {
+        lines.push(Line::from("no process data yet".dim()));
+    }
     for p in app.snapshot.top_processes.iter().take(MAX_PROCS) {
         lines.push(Line::from(format!(
             "{:<7} {:<20} {:>6} {:>10} {:>10}",
@@ -225,8 +229,28 @@ mod tests {
         let mut s = snap();
         s.system.cpu_cores = vec![50.0; 96];
         let out = render(100, 12, s);
-        assert_eq!(out.lines().count(), 12);
-        assert!(out.contains("c0"), "{out}");
+        // 100 / 15 = 6 cells per row, 4 rows at most → c0..c23 visible, the rest hidden
+        assert!(out.contains("c23") && !out.contains("c24"), "{out}");
+        assert!(out.lines().all(|l| l.chars().count() <= 100));
+    }
+
+    #[test]
+    fn gpu_table_fits_80_columns() {
+        let mut app = App::default();
+        app.ingest(snap());
+        let lines = super::gpu_lines(&app);
+        for l in &lines {
+            let text: String = l.spans.iter().map(|s| s.content.to_string()).collect();
+            assert!(text.chars().count() <= 80, "{} chars: {text}", text.chars().count());
+        }
+        let row: String = lines[1].spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(row.contains("1,980 MHz") && row.contains("250.0 / 300 W"), "{row}");
+    }
+
+    #[test]
+    fn empty_process_list_says_so() {
+        let out = render(120, 40, Snapshot { top_processes: Vec::new(), ..snap() });
+        assert!(out.contains("no process data yet"), "{out}");
     }
 
     #[test]
