@@ -16,18 +16,35 @@ cargo install --path .
 ```sh
 vtop --url http://127.0.0.1:8000     # vLLM base URL (default)
 vtop --ascii                         # plain ASCII sparklines
+vtop --proxy 127.0.0.1:8001          # also record per-request stats (see below)
 ```
+
+## Per-request stats (`--proxy`)
+
+vLLM's `/metrics` has no per-request numbers, so vtop can sit in front of the server as an OpenAI-compatible pass-through: it forwards every request and response byte-for-byte to `--url` (same path, method, headers, status, SSE stream) and records, per request, the model, status, prompt/output tokens, TTFT, duration and decode tok/s. Point clients at the proxy instead of vLLM:
+
+```sh
+vtop --url http://127.0.0.1:8000 --proxy 127.0.0.1:8001
+export OPENAI_BASE_URL=http://127.0.0.1:8001/v1        # OpenAI SDK
+export VL_REC_SERVER_URL=http://localhost:8001/v1      # paddlex OCR
+```
+
+Rows appear at the bottom of Overview and in the Requests tab (`3`). Output tokens come from `usage`; streams without `stream_options.include_usage` fall back to counting content chunks, shown as `~N`. If vLLM is unreachable the client gets `502 vtop: upstream unreachable: ...` and the row shows `error`. Times are UTC.
 
 ## Keys
 
 | Key | Action |
 |---|---|
-| `1`–`4` | Overview / Engine / Requests / Hardware (tabs 2–4: next version) |
+| `1`–`4` | Overview / Engine / Requests / Hardware (tabs 2 and 4: next version) |
 | `+` / `-` | sampling interval 0.5 / 1 / 2 / 5 / 10 s |
 | `[` / `]` | sparkline window 1 / 5 / 30 min |
 | `Space` | freeze the screen (collection continues) |
 | `r` | reset sparklines and the tok/s baseline |
+| `j` / `k` | Requests: move the selection |
+| `/` | Requests: filter — space-separated terms must all match the model or status; `>N` keeps rows with at least N output tokens; `Enter` keeps, `Esc` clears |
+| `c` | Requests: clear the log |
+| `e` | export the snapshot and all recorded requests to `vtop-<YYYYmmdd-HHMMSS>.json` in the current directory |
 | `?` | help |
 | `q` / `Esc` | quit / close |
 
-Next version: `--proxy` (OpenAI-compatible pass-through that records per-request TTFT, tokens and tok/s), `c` clear requests, `/` filter, `j`/`k` select, `e` export snapshot.
+Next version: Engine tab, Hardware tab (process table, per-GPU rows).

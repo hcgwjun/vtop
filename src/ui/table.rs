@@ -13,7 +13,7 @@ pub fn request_rows(records: &[Record], width: u16, max_rows: usize) -> Vec<Line
     let model_col = width >= 100;
     let model = |m: &str| if model_col { format!(" {:<MODEL_W$}", m.chars().take(MODEL_W).collect::<String>()) } else { String::new() };
     let header = format!(
-        "{:<8} {:<9}{} {:>7} {:>7} {:>8} {:>6} {:>7}",
+        "{:<9} {:<9}{} {:>7} {:>7} {:>8} {:>6} {:>7}",
         "TIME(UTC)", "STATUS", model("MODEL"), "PROMPT", "OUTPUT", "TTFT ms", "TOK/S", "TIME"
     );
     let mut lines = vec![Line::from(header.dim())];
@@ -35,7 +35,7 @@ pub fn request_rows(records: &[Record], width: u16, max_rows: usize) -> Vec<Line
             na(r.duration_ms, |d| format!("{} s", num(d / 1000.0, 1))),
         );
         lines.push(Line::from(vec![
-            Span::raw(format!("{:<8} ", crate::requests::hhmmss_utc(r.started_unix_ms))),
+            Span::raw(format!("{:<9} ", crate::requests::hhmmss_utc(r.started_unix_ms))),
             Span::styled(format!("{status:<9}"), color),
             Span::raw(rest),
         ]));
@@ -66,6 +66,8 @@ mod tests {
         let rows = request_rows(&[r], 120, 5);
         let text: String = rows[1].spans.iter().map(|s| s.content.to_string()).collect();
         assert!(text.contains("~42"), "{text}");
+        let header: String = rows[0].spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(header.find("STATUS"), text.find("200"), "columns line up\n{header}\n{text}");
         assert!(text.contains("n/a"), "{text}");
     }
 }

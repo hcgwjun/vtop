@@ -148,7 +148,7 @@ async fn handler(State(ctx): State<Ctx>, req: Request) -> Response {
         r.status = Status::Done(status.as_u16());
         r.prompt_tokens = usage.map(|u| u.0);
         r.output_tokens = usage.map(|u| u.1);
-        r.ttft_ms = Some(ms);
+        r.ttft_ms = None; // buffered: no first-token time, so tok/s is over the whole duration
         r.duration_ms = Some(ms);
     });
     (status, headers, bytes).into_response()
@@ -291,7 +291,8 @@ mod tests {
         let r = settled(&log).await;
         assert!(matches!(r.status, Status::Done(200)));
         assert_eq!((r.prompt_tokens, r.output_tokens, r.approx), (Some(20), Some(2), false));
-        assert_eq!(r.ttft_ms, r.duration_ms);
+        assert!(r.ttft_ms.is_none(), "a buffered response has no first-token time");
+        assert!(r.tok_s().is_some(), "tok/s over the whole duration");
     }
 
     #[tokio::test]

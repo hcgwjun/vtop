@@ -71,10 +71,6 @@ impl RequestLog {
     pub fn clear(&mut self) {
         self.items.clear();
     }
-
-    pub fn len(&self) -> usize {
-        self.items.len()
-    }
 }
 
 pub type SharedLog = Arc<Mutex<RequestLog>>;
@@ -125,7 +121,7 @@ mod tests {
         for _ in 0..1100 {
             log.push(rec());
         }
-        assert_eq!(log.len(), 1000);
+        assert_eq!(log.latest(2000).len(), 1000);
         assert_eq!(log.latest(1)[0].id, 1100);
     }
 
