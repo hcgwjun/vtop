@@ -76,7 +76,7 @@ mod tests {
         let mut app = App { tab: 2, requests: vec![first, second], ..App::default() };
         let out = render(120, 30, &app);
         assert!(out.contains("2 requests"), "{out}");
-        assert!(out.contains("request chatcmpl-first0000") && out.contains("queue 12 ms") && out.contains("tok/s 130.5"), "{out}");
+        assert!(out.contains("request chatcmpl-first0000") && out.contains("queue 12 ms") && out.contains("tok/s 130.0"), "{out}");
         app.selected = 1;
         let out = render(120, 30, &app);
         assert!(out.contains("request chatcmpl-second000") && !out.contains("queue 12 ms"), "{out}");

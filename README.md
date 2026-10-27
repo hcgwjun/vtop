@@ -57,7 +57,7 @@ vtop exits with `cannot bind otlp receiver` when the port is taken (another vtop
 | TTFT ms | time to first token |
 | QUEUE ms | waiting in the scheduler queue before the first forward pass |
 | DECODE s | time spent generating after the first token |
-| TOK/S | OUTPUT ÷ DECODE |
+| TOK/S | (OUTPUT − 1) ÷ DECODE — the first token belongs to prefill |
 | E2E s | arrival to last token |
 
 Requests that never reach the engine (bad model name, context overflow) produce no span and no row.
@@ -70,7 +70,7 @@ Requests that never reach the engine (bad model name, context overflow) produce 
 | `+` / `-` | sampling interval 0.5 / 1 / 2 / 5 / 10 s |
 | `[` / `]` | sparkline window 1 / 5 / 30 min |
 | `Space` | freeze the screen (collection continues) |
-| `r` | reset sparklines and the tok/s baseline |
+| `r` | reset sparklines |
 | `j` / `k` | Requests: move the selection (it stays on its row as new requests arrive) |
 | `/` | Requests: filter — space-separated terms must all match the request id; `>N` keeps rows with at least N output tokens; `Enter` keeps, `Esc` clears |
 | `c` | Requests: clear the log |

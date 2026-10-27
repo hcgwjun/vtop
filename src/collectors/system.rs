@@ -14,9 +14,12 @@ pub struct ProcInfo {
     pub start_time: u64,
 }
 
-/// The vLLM parent: the earliest-started process whose command line mentions vllm.
+/// The vLLM parent: the earliest-started `vllm serve` / api_server process; failing that, the earliest
+/// process whose command line mentions vllm at all (a venv path such as `.venv-vllm` also matches).
 pub fn find_serving<'a, I: Iterator<Item = &'a ProcInfo>>(procs: I) -> Option<&'a ProcInfo> {
-    procs.filter(|p| p.cmd.contains("vllm")).min_by_key(|p| p.start_time)
+    let loose: Vec<&ProcInfo> = procs.filter(|p| p.cmd.contains("vllm")).collect();
+    let strict = loose.iter().filter(|p| p.cmd.contains("vllm serve") || p.cmd.contains("vllm.entrypoints"));
+    strict.min_by_key(|p| p.start_time).or_else(|| loose.iter().min_by_key(|p| p.start_time)).copied()
 }
 
 #[cfg(test)]
@@ -71,7 +74,7 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
             let mut last = Instant::now();
             let mut tick = 0u32;
             loop {
-                thread::sleep(cfg.interval());
+                cfg.sleep_interval();
                 sys.refresh_cpu_usage();
                 sys.refresh_memory();
                 // walking every process costs a few % CPU per second; the header line can lag 5 ticks
@@ -134,6 +137,16 @@ mod tests {
     }
 
     #[test]
+    fn find_serving_prefers_the_server_over_venv_path_matches() {
+        let procs = [
+            ProcInfo { pid: 1, cmd: "/Users/me/.venv-vllm-metal/bin/python otlp_rx.py".into(), start_time: 1 },
+            ProcInfo { pid: 2, cmd: "/Users/me/.venv-vllm-metal/bin/python /Users/me/.venv-vllm-metal/bin/vllm serve m".into(), start_time: 9 },
+        ];
+        assert_eq!(find_serving(procs.iter()).map(|p| p.pid), Some(2));
+        assert_eq!(find_serving(procs[..1].iter()).map(|p| p.pid), Some(1), "fallback keeps the loose match");
+    }
+
+    #[test]
     fn finds_vllm_process_started_after_vtop() {
         let mut sys = Sys::new();
         refresh(&mut sys);
@@ -143,6 +156,7 @@ mod tests {
         let infos = proc_infos(&sys);
         let found = infos.iter().any(|p| p.pid == child.id() && p.cmd.contains("MARKER"));
         child.kill().ok();
+        child.wait().ok();
         assert!(found, "cmd of a process started after the first refresh must be populated");
     }
 }

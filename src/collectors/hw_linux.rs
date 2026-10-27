@@ -51,7 +51,7 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
                     p.gpu_mem = proc_mem.get(&p.pid).copied();
                 }
                 drop(guard);
-                thread::sleep(cfg.interval());
+                cfg.sleep_interval();
             }
         })
         .expect("spawn hw thread");

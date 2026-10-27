@@ -47,10 +47,11 @@ impl Record {
         })
     }
 
-    /// Output tokens per second of decode time; `None` until both are known or when decode took no time.
+    /// Tokens per second of decode time. vLLM's decode time starts after the first token, so that token
+    /// is left out; `None` until both are known or when decode took no time.
     pub fn tok_s(&self) -> Option<f64> {
         let decode_s = self.decode_ms? / 1000.0;
-        let out = self.output_tokens? as f64;
+        let out = (self.output_tokens? as f64 - 1.0).max(0.0);
         (decode_s > 0.0).then(|| out / decode_s)
     }
 }
@@ -167,7 +168,9 @@ mod tests {
         assert_eq!(r.tok_s(), None);
         r.decode_ms = Some(500.0);
         r.output_tokens = Some(100);
-        assert_eq!(r.tok_s(), Some(200.0));
+        assert_eq!(r.tok_s(), Some(198.0), "decode time covers the tokens after the first one");
+        r.output_tokens = Some(1);
+        assert_eq!(r.tok_s(), Some(0.0));
     }
 
     /// Runs in a child process: setting TZ in this process would race the other tests' localtime_r calls.

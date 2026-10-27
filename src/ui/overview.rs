@@ -40,7 +40,7 @@ fn header_lines(app: &App, cfg: &Config) -> Vec<Line<'static>> {
     let interval = cfg.interval();
     let (state, color) = if !s.vllm.reachable {
         ("DISCONNECTED", Color::Red)
-    } else if s.sampled_at.is_some_and(|t| t.elapsed() > interval * 3) {
+    } else if !app.frozen && s.sampled_at.is_some_and(|t| t.elapsed() > interval * 3) {
         ("STALE", Color::Yellow)
     } else {
         ("LIVE", Color::Green)
@@ -257,7 +257,7 @@ fn help_overlay(f: &mut Frame, area: Rect) {
         "+ / -    sampling interval 0.5 / 1 / 2 / 5 / 10 s",
         "[ / ]    sparkline window 1 / 5 / 30 min",
         "Space    freeze screen (collection continues)",
-        "r        reset sparklines and tok/s baseline",
+        "r        reset sparklines",
         "j / k    requests: move selection",
         "/        requests: filter (Enter keeps, Esc clears); >N = output tokens >= N",
         "c        requests: clear the log",
@@ -306,7 +306,7 @@ mod tests {
         let mut app = App::default();
         app.requests = vec![r];
         let out = render_app(120, 40, &app);
-        assert!(out.contains("302") && out.contains("182.4"), "{out}");
+        assert!(out.contains("302") && out.contains("181.8"), "{out}");
         assert!(!out.contains("no requests yet"), "{out}");
     }
 
@@ -413,6 +413,21 @@ mod tests {
         assert_eq!(app.window_min, 30);
         assert!(!app.on_key(key(' '), &cfg) && app.frozen);
         assert!(app.on_key(key('q'), &cfg));
+    }
+
+    #[test]
+    fn frozen_screen_is_not_marked_stale() {
+        let snap = Snapshot {
+            vllm: Vllm { reachable: true, ..Default::default() },
+            sampled_at: Some(std::time::Instant::now() - std::time::Duration::from_secs(60)),
+            ..Default::default()
+        };
+        let mut app = App::default();
+        app.ingest(snap);
+        assert!(render_app(100, 20, &app).contains("STALE"));
+        app.frozen = true;
+        let out = render_app(100, 20, &app);
+        assert!(out.contains("FROZEN") && !out.contains("STALE"), "{out}");
     }
 
     #[test]

@@ -19,9 +19,19 @@ pub struct Rate {
     last: Option<(Instant, f64)>,
 }
 
+/// Scheme added, trailing `/`, `/v1` (OpenAI base URLs) and `/metrics` removed.
+fn base_url(base: &str) -> String {
+    let b = if base.contains("://") { base.to_string() } else { format!("http://{base}") };
+    let b = b.trim_end_matches('/');
+    b.strip_suffix("/metrics").or_else(|| b.strip_suffix("/v1")).unwrap_or(b).trim_end_matches('/').to_string()
+}
+
 pub fn metrics_url(base: &str) -> String {
-    let base = if base.contains("://") { base.to_string() } else { format!("http://{base}") };
-    format!("{}/metrics", base.trim_end_matches('/'))
+    format!("{}/metrics", base_url(base))
+}
+
+pub fn models_url(base: &str) -> String {
+    format!("{}/v1/models", base_url(base))
 }
 
 /// Polls `/metrics` every interval; three straight failures mark the server unreachable.
@@ -30,14 +40,15 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
         .name("vllm".into())
         .spawn(move || {
             let url = metrics_url(&cfg.url);
-            let models_url = url.replace("/metrics", "/v1/models");
+            let models_url = models_url(&cfg.url);
             let (mut generation, mut prompt) = (Rate::default(), Rate::default());
             let mut failures = 0u32;
             let mut model: Option<String> = None;
             let mut model_tried = false; // /v1/models is asked once per connection, never on every tick
             let client = reqwest::blocking::Client::new();
+            // fixed: a loaded vLLM can take longer than a 0.5 s interval to answer /metrics
+            let timeout = std::time::Duration::from_secs(5);
             loop {
-                let timeout = cfg.interval().min(std::time::Duration::from_secs(5));
                 let body = client.get(&url).timeout(timeout).send().and_then(|r| r.error_for_status()).and_then(|r| r.text());
                 // everything slow (HTTP, parsing) happens before the lock is taken
                 let result = body.map(|text| {
@@ -71,7 +82,7 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
                     }
                 }
                 drop(snap);
-                thread::sleep(cfg.interval());
+                cfg.sleep_interval();
             }
         })
         .expect("spawn vllm thread");
@@ -112,8 +123,16 @@ fn parse_labels(s: &str) -> Labels {
 }
 
 impl Metrics {
+    /// Sum over every label set (data-parallel vLLM reports one series per engine).
     pub fn get(&self, name: &str) -> Option<f64> {
-        self.0.get(name)?.first().map(|(_, v)| *v)
+        let series = self.0.get(name)?;
+        (!series.is_empty()).then(|| series.iter().map(|(_, v)| v).sum())
+    }
+
+    /// Mean over label sets, for ratios such as KV cache usage.
+    pub fn avg(&self, name: &str) -> Option<f64> {
+        let series = self.0.get(name)?;
+        (!series.is_empty()).then(|| series.iter().map(|(_, v)| v).sum::<f64>() / series.len() as f64)
     }
 
     pub fn first_of(&self, names: &[&str]) -> Option<f64> {
@@ -137,6 +156,14 @@ impl Metrics {
             })
             .collect();
         buckets.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // one series per engine: add up the counts that share an `le`
+        buckets.dedup_by(|next, prev| {
+            let same = next.0 == prev.0;
+            if same {
+                prev.1 += next.1;
+            }
+            same
+        });
         let total = buckets.last()?.1;
         if total <= 0.0 {
             return None;
@@ -181,7 +208,7 @@ pub fn to_vllm(m: &Metrics, generation: &mut Rate, prompt: &mut Rate, now: Insta
         model: m.label("vllm:num_requests_running", "model_name"),
         running: m.get("vllm:num_requests_running").map(|v| v as u64),
         waiting: m.get("vllm:num_requests_waiting").map(|v| v as u64),
-        kv_cache_usage: m.first_of(&["vllm:kv_cache_usage_perc", "vllm:gpu_cache_usage_perc"]),
+        kv_cache_usage: ["vllm:kv_cache_usage_perc", "vllm:gpu_cache_usage_perc"].iter().find_map(|n| m.avg(n)),
         prefix_cache_hit_rate: hits.zip(queries).map(|(h, q)| h / q),
         prompt_tok_s: prompt.update(now, m.get("vllm:prompt_tokens_total")),
         generation_tok_s: generation.update(now, m.get("vllm:generation_tokens_total")),
@@ -232,6 +259,26 @@ mod tests {
     }
 
     #[test]
+    fn label_sets_are_summed_and_histograms_merged_by_le() {
+        // data parallel: every series comes once per engine
+        let two_engines: String = V1
+            .lines()
+            .flat_map(|l| {
+                if l.starts_with("vllm:") && l.contains('{') {
+                    vec![l.replace("{", "{engine=\"0\","), l.replace("{", "{engine=\"1\",")]
+                } else {
+                    vec![l.to_string()]
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (one, two) = (parse(V1), parse(&two_engines));
+        assert_eq!(two.get("vllm:num_requests_running"), Some(6.0), "3 per engine");
+        let (p1, p2) = (one.histogram_quantile("vllm:time_to_first_token_seconds", 0.5).unwrap(), two.histogram_quantile("vllm:time_to_first_token_seconds", 0.5).unwrap());
+        assert!((p1 - p2).abs() < 1e-9, "same distribution on both engines → same p50: {p1} vs {p2}");
+    }
+
+    #[test]
     fn histogram_p50_from_buckets() {
         let m = parse(V1);
         let p50 = m.histogram_quantile("vllm:time_to_first_token_seconds", 0.5).unwrap();
@@ -242,13 +289,16 @@ mod tests {
 
 #[cfg(test)]
 mod url_tests {
-    use super::metrics_url;
+    use super::{metrics_url, models_url};
 
     #[test]
     fn metrics_url_normalizes() {
         assert_eq!(metrics_url("127.0.0.1:8000"), "http://127.0.0.1:8000/metrics");
         assert_eq!(metrics_url("http://h:8000/"), "http://h:8000/metrics");
         assert_eq!(metrics_url("https://h"), "https://h/metrics");
+        assert_eq!(metrics_url("http://h:8000/v1"), "http://h:8000/metrics", "OpenAI base URLs end in /v1");
+        assert_eq!(metrics_url("http://h:8000/metrics"), "http://h:8000/metrics");
+        assert_eq!(models_url("http://h:8000/v1/"), "http://h:8000/v1/models");
     }
 }
 

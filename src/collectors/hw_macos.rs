@@ -47,7 +47,8 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
                         let mut snap = state.write().unwrap();
                         snap.errors.retain(|x| !x.starts_with("hw:"));
                         snap.errors.push(format!("hw: {e}"));
-                        thread::sleep(cfg.interval());
+                        drop(snap);
+                        cfg.sleep_interval();
                         continue;
                     }
                 };

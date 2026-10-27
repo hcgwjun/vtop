@@ -22,4 +22,31 @@ impl Config {
     pub fn interval(&self) -> Duration {
         Duration::from_millis(self.interval_ms.load(Ordering::Relaxed))
     }
+
+    /// Sleeps one interval, re-reading it every 100 ms so a `+`/`-` press takes effect at once.
+    pub fn sleep_interval(&self) {
+        let start = std::time::Instant::now();
+        while start.elapsed() < self.interval() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sleep_interval_wakes_early_when_the_interval_shrinks() {
+        let cfg = Config::new("http://x".into(), false);
+        cfg.interval_ms.store(10_000, Ordering::Relaxed);
+        let c = cfg.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            c.interval_ms.store(500, Ordering::Relaxed);
+        });
+        let t = std::time::Instant::now();
+        cfg.sleep_interval();
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+    }
 }

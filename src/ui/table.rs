@@ -57,7 +57,7 @@ mod tests {
         let rows = request_rows(&[r, missing], 120, 5);
         let (header, row, row2) = (text(&rows[0]), text(&rows[1]), text(&rows[2]));
         assert_eq!(header.find("ID"), row.find("92e9abad"), "id column\n{header}\n{row}");
-        assert!(row.contains("182.4") && row.contains("420"), "{row}");
+        assert!(row.contains("181.8") && row.contains("420"), "{row}");
         assert!(row2.contains("n/a"), "{row2}");
         assert!(header.contains("QUEUE") && header.contains("DECODE"));
         assert!(!text(&request_rows(&[], 80, 5)[0]).contains("QUEUE"), "narrow drops queue/decode");
