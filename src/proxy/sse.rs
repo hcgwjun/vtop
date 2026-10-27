@@ -36,8 +36,12 @@ impl SsePeek {
         if let Some(u) = usage_of(&v) {
             self.usage = Some(u);
         }
-        let content = &v["choices"][0]["delta"]["content"];
-        if content.as_str().is_some_and(|s| !s.is_empty()) {
+        // one chunk ≈ one token whichever field carries it: chat content/reasoning/tool calls or completions text
+        let has_text = |x: &Value| x.as_str().is_some_and(|s| !s.is_empty()) || x.as_array().is_some_and(|a| !a.is_empty());
+        let choices = v["choices"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+        if choices.iter().any(|c| {
+            has_text(&c["text"]) || ["content", "reasoning_content", "tool_calls"].iter().any(|k| has_text(&c["delta"][k]))
+        }) {
             self.chunks += 1;
         }
     }
@@ -91,6 +95,18 @@ mod tests {
         p.finish();
         assert_eq!(p.chunks, 2);
         assert_eq!(p.usage, Some((20, 7)));
+    }
+
+    #[test]
+    fn counts_completions_text_reasoning_and_tool_calls() {
+        let mut p = SsePeek::default();
+        p.feed(b"data: {\"choices\":[{\"text\":\"a\"}]}\n");
+        p.feed(b"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n");
+        p.feed(b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0}]}}]}\n");
+        p.feed(b"data: {\"choices\":[{\"index\":0,\"delta\":{}},{\"index\":1,\"delta\":{\"content\":\"b\"}}]}\n");
+        p.feed(b"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n");
+        p.finish();
+        assert_eq!(p.chunks, 4);
     }
 
     #[test]

@@ -76,8 +76,12 @@ impl App {
     }
 
     pub fn ingest_log(&mut self) {
-        if let Some(log) = &self.log {
-            self.requests = log.lock().unwrap().latest(crate::requests::CAPACITY);
+        let Some(log) = &self.log else { return };
+        let top = self.requests.first().map_or(0, |r| r.id);
+        self.requests = log.lock().unwrap().latest(crate::requests::CAPACITY);
+        // keep the cursor on its row as newer rows are inserted above; row 0 keeps tailing the newest
+        if self.selected > 0 {
+            self.selected += self.requests.iter().take_while(|r| r.id > top).count();
         }
     }
 
@@ -154,6 +158,7 @@ impl App {
             KeyCode::Char('q') => return true,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
             KeyCode::Esc if self.help => self.help = false,
+            KeyCode::Esc if !self.filter.is_empty() => self.filter.clear(),
             KeyCode::Esc => return true,
             KeyCode::Char(c @ '1'..='4') => self.tab = c as u8 - b'1',
             KeyCode::Char('+') | KeyCode::Char('=') => step(1),
@@ -262,6 +267,36 @@ mod tests {
         app.on_key(key(KeyCode::Char('/')), &cfg);
         assert!(!app.on_key(key(KeyCode::Esc), &cfg));
         assert!(!app.filter_editing && app.filter.is_empty());
+    }
+
+    #[test]
+    fn esc_clears_an_applied_filter_instead_of_quitting() {
+        let cfg = Config::new("http://x".into(), false);
+        let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        let mut app = app3();
+        app.tab = 2;
+        app.filter = "b".into();
+        assert!(!app.on_key(key(KeyCode::Esc), &cfg));
+        assert!(app.filter.is_empty());
+        assert!(app.on_key(key(KeyCode::Esc), &cfg), "second Esc quits");
+    }
+
+    #[test]
+    fn selection_follows_its_row_when_new_requests_arrive() {
+        let log = SharedLog::default();
+        for _ in 0..2 {
+            log.lock().unwrap().push(rec("a", 1, Status::Done(200)));
+        }
+        let mut app = App { log: Some(log.clone()), ..App::default() };
+        app.ingest_log();
+        app.selected = 1; // the oldest row, id 1
+        log.lock().unwrap().push(rec("a", 1, Status::Done(200)));
+        app.ingest_log();
+        assert_eq!(app.visible_requests()[app.selected].id, 1);
+        app.selected = 0;
+        log.lock().unwrap().push(rec("a", 1, Status::Done(200)));
+        app.ingest_log();
+        assert_eq!(app.selected, 0, "the top row keeps tailing the newest request");
     }
 
     #[test]

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{Request, State};
-use axum::http::header::{CONNECTION, CONTENT_LENGTH, HOST, TRANSFER_ENCODING};
+use axum::http::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, TRANSFER_ENCODING};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
@@ -51,9 +51,10 @@ pub fn spawn(bind: &str, upstream: String, log: SharedLog) -> anyhow::Result<Joi
 fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
+        // no read timeout: a non-stream completion sends nothing until generation ends, which can take minutes
         reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
-            .read_timeout(Duration::from_secs(60)) // per read, so long streams survive
+            .redirect(reqwest::redirect::Policy::none()) // the client decides, exactly as against vLLM
             .build()
             .expect("reqwest client")
     })
@@ -111,47 +112,68 @@ async fn handler(State(ctx): State<Ctx>, req: Request) -> Response {
     let url = format!("{}{}", ctx.upstream, parts.uri.path_and_query().map_or("/", |p| p.as_str()));
     let mut headers = parts.headers;
     strip(&mut headers);
+    // hyper drops this future when the client goes away; the guard turns that into an error row
+    let mut guard = Pending { id, started, log: ctx.log.clone(), armed: true };
+    let fail = |e: &reqwest::Error, guard: &mut Pending| {
+        let msg = describe(e);
+        guard.finish(Status::Error(msg.clone()));
+        (StatusCode::BAD_GATEWAY, format!("vtop: upstream unreachable: {msg}")).into_response()
+    };
     let resp = match client().request(parts.method, &url).headers(headers).body(body).send().await {
         Ok(r) => r,
-        Err(e) => {
-            let msg = describe(&e);
-            ctx.log.lock().unwrap().update(id, |r| {
-                r.status = Status::Error(msg.clone());
-                r.duration_ms = Some(ms_since(started));
-            });
-            return (StatusCode::BAD_GATEWAY, format!("vtop: upstream unreachable: {msg}")).into_response();
-        }
+        Err(e) => return fail(&e, &mut guard),
     };
     let status = resp.status();
     let mut headers = resp.headers().clone();
     headers.remove(TRANSFER_ENCODING);
     headers.remove(CONNECTION);
 
-    if stream {
+    // only a real event stream goes through Tap; an error JSON to a stream request is buffered like any other reply
+    let is_sse = headers.get(CONTENT_TYPE).and_then(|v| v.to_str().ok()).is_some_and(|v| v.starts_with("text/event-stream"));
+    if stream && is_sse {
+        guard.armed = false;
         let tap = Tap { inner: resp.bytes_stream(), peek: SsePeek::default(), started, ttft_ms: None, id, status: status.as_u16(), log: ctx.log, outcome: None };
         return (status, headers, Body::from_stream(tap)).into_response();
     }
     let bytes = match resp.bytes().await {
         Ok(b) => b,
-        Err(e) => {
-            let msg = describe(&e);
-            ctx.log.lock().unwrap().update(id, |r| {
-                r.status = Status::Error(msg.clone());
-                r.duration_ms = Some(ms_since(started));
-            });
-            return (StatusCode::BAD_GATEWAY, format!("vtop: upstream unreachable: {msg}")).into_response();
-        }
+        Err(e) => return fail(&e, &mut guard),
     };
-    let ms = ms_since(started);
     let usage = parse_usage(&bytes);
-    ctx.log.lock().unwrap().update(id, |r| {
-        r.status = Status::Done(status.as_u16());
+    guard.log.lock().unwrap().update(id, |r| {
         r.prompt_tokens = usage.map(|u| u.0);
         r.output_tokens = usage.map(|u| u.1);
         r.ttft_ms = None; // buffered: no first-token time, so tok/s is over the whole duration
-        r.duration_ms = Some(ms);
     });
+    guard.finish(Status::Done(status.as_u16()));
     (status, headers, bytes).into_response()
+}
+
+/// Marks the record when the handler ends; dropped unfinished means the client disconnected.
+struct Pending {
+    id: u64,
+    started: Instant,
+    log: SharedLog,
+    armed: bool,
+}
+
+impl Pending {
+    fn finish(&mut self, status: Status) {
+        self.armed = false;
+        let ms = ms_since(self.started);
+        self.log.lock().unwrap().update(self.id, |r| {
+            r.status = status;
+            r.duration_ms = Some(ms);
+        });
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        if self.armed {
+            self.finish(Status::Error("client disconnected".into()));
+        }
+    }
 }
 
 /// Passes upstream chunks through untouched while peeking at them; the record is finalized on drop,
@@ -241,7 +263,54 @@ mod tests {
             }
         });
         let len = post(|body: Bytes| async move { body.len().to_string() });
-        serve(Router::new().route("/v1/chat/completions", completions).route("/len", len)).await
+        let slow = post(|| async { tokio::time::sleep(Duration::from_secs(2)).await; "late" });
+        let bad = post(|| async { (StatusCode::BAD_REQUEST, [("content-type", "application/json")], "{\"error\":\"no model\"}") });
+        let redirect = axum::routing::get(|| async { (StatusCode::TEMPORARY_REDIRECT, [("location", "/v1/models")], "") });
+        serve(
+            Router::new()
+                .route("/v1/chat/completions", completions)
+                .route("/len", len)
+                .route("/slow", slow)
+                .route("/bad", bad)
+                .route("/v1/models/", redirect),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn cancelled_request_is_not_left_in_flight() {
+        let log = SharedLog::default();
+        let proxy = serve(router(upstream().await, log.clone())).await;
+        let client = reqwest::Client::builder().timeout(Duration::from_millis(100)).build().unwrap();
+        assert!(client.post(format!("{proxy}/slow")).send().await.is_err());
+        let r = settled(&log).await;
+        assert!(matches!(&r.status, Status::Error(e) if e.contains("disconnected")), "{:?}", r.status);
+    }
+
+    #[tokio::test]
+    async fn stream_request_with_json_error_reply_records_status() {
+        let log = SharedLog::default();
+        let proxy = serve(router(upstream().await, log.clone())).await;
+        let resp = reqwest::Client::new()
+            .post(format!("{proxy}/bad"))
+            .json(&serde_json::json!({"model": "m", "stream": true}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400);
+        assert_eq!(resp.text().await.unwrap(), "{\"error\":\"no model\"}");
+        let r = settled(&log).await;
+        assert!(matches!(r.status, Status::Done(400)), "{:?}", r.status);
+    }
+
+    #[tokio::test]
+    async fn redirects_are_passed_through_not_followed() {
+        let log = SharedLog::default();
+        let proxy = serve(router(upstream().await, log.clone())).await;
+        let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+        let resp = client.get(format!("{proxy}/v1/models/")).send().await.unwrap();
+        assert_eq!(resp.status(), 307);
+        assert_eq!(resp.headers()["location"], "/v1/models");
     }
 
     async fn settled(log: &SharedLog) -> Record {
