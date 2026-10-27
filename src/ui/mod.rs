@@ -1,6 +1,7 @@
 pub mod app;
 pub mod format;
 pub mod overview;
+pub mod requests_tab;
 pub mod table;
 
 use std::time::{Duration, Instant};
@@ -14,7 +15,7 @@ use app::App;
 
 pub fn run(state: Shared, cfg: SharedConfig, log: Option<SharedLog>) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
-    let mut app = App { proxy_on: log.is_some(), ..App::default() };
+    let mut app = App { proxy_on: log.is_some(), log, ..App::default() };
     let mut last_draw = Instant::now() - Duration::from_secs(1);
     loop {
         let due = last_draw.elapsed() >= cfg.interval().min(Duration::from_secs(1));
@@ -22,9 +23,7 @@ pub fn run(state: Shared, cfg: SharedConfig, log: Option<SharedLog>) -> anyhow::
             if !app.frozen {
                 let snap = state.read().unwrap().clone();
                 app.ingest(snap);
-                if let Some(log) = &log {
-                    app.ingest_log(log);
-                }
+                app.ingest_log();
             }
             terminal.draw(|f| overview::draw(f, &app, &cfg))?;
             last_draw = Instant::now();

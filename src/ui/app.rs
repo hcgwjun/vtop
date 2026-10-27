@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::config::{Config, INTERVALS_MS};
 use crate::history::History;
-use crate::requests::{Record, SharedLog};
+use crate::requests::{Record, SharedLog, Status};
 use crate::snapshot::Snapshot;
 
 pub const WINDOWS_MIN: [u8; 3] = [1, 5, 30];
@@ -21,6 +21,11 @@ pub struct App {
     /// Newest first; refilled from the proxy log every tick.
     pub requests: Vec<Record>,
     pub proxy_on: bool,
+    pub log: Option<SharedLog>,
+    /// Index into `visible_requests()`.
+    pub selected: usize,
+    pub filter: String,
+    pub filter_editing: bool,
 }
 
 impl Default for App {
@@ -34,6 +39,10 @@ impl Default for App {
             tab: 0,
             requests: Vec::new(),
             proxy_on: false,
+            log: None,
+            selected: 0,
+            filter: String::new(),
+            filter_editing: false,
         }
     }
 }
@@ -61,8 +70,33 @@ impl App {
         self.snapshot = snap;
     }
 
-    pub fn ingest_log(&mut self, log: &SharedLog) {
-        self.requests = log.lock().unwrap().latest(crate::requests::CAPACITY);
+    pub fn ingest_log(&mut self) {
+        if let Some(log) = &self.log {
+            self.requests = log.lock().unwrap().latest(crate::requests::CAPACITY);
+        }
+    }
+
+    /// Every whitespace token must match: `>N` means output_tokens >= N, anything else is a
+    /// case-insensitive substring of the model or status.
+    pub fn visible_requests(&self) -> Vec<&Record> {
+        let tokens: Vec<String> = self.filter.split_whitespace().map(str::to_lowercase).collect();
+        self.requests
+            .iter()
+            .filter(|r| {
+                tokens.iter().all(|t| match t.strip_prefix('>').and_then(|n| n.parse::<u64>().ok()) {
+                    Some(n) => r.output_tokens.is_some_and(|o| o >= n),
+                    None => r.model.as_deref().unwrap_or("").to_lowercase().contains(t) || status_text(&r.status).contains(t),
+                })
+            })
+            .collect()
+    }
+
+    fn clear_requests(&mut self) {
+        if let Some(log) = &self.log {
+            log.lock().unwrap().clear();
+        }
+        self.requests.clear();
+        self.selected = 0;
     }
 
     /// Returns true when the app should quit.
@@ -89,8 +123,83 @@ impl App {
             KeyCode::Char(' ') => self.frozen = !self.frozen,
             KeyCode::Char('r') => self.history.clear(),
             KeyCode::Char('?') => self.help = !self.help,
+            KeyCode::Char('j') if self.tab == 2 => self.selected += 1,
+            KeyCode::Char('k') if self.tab == 2 => self.selected = self.selected.saturating_sub(1),
+            KeyCode::Char('c') if self.tab == 2 => self.clear_requests(),
+            KeyCode::Char('/') if self.tab == 2 => self.filter_editing = true,
             _ => {}
         }
+        self.selected = self.selected.min(self.visible_requests().len().saturating_sub(1));
         false
+    }
+}
+
+/// Lower-case text the filter matches against: "200", "in flight", "error connection refused".
+pub fn status_text(s: &Status) -> String {
+    match s {
+        Status::InFlight => "in flight".into(),
+        Status::Done(c) => c.to_string(),
+        Status::Error(e) => format!("error {}", e.to_lowercase()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rec(model: &str, output: u64, status: Status) -> Record {
+        Record {
+            id: 0,
+            started_unix_ms: 0,
+            path: "/v1/chat/completions".into(),
+            model: Some(model.into()),
+            stream: false,
+            status,
+            prompt_tokens: None,
+            output_tokens: Some(output),
+            approx: false,
+            ttft_ms: None,
+            duration_ms: None,
+        }
+    }
+
+    fn app3() -> App {
+        let mut app = App::default();
+        app.requests = vec![
+            rec("a", 10, Status::Done(200)),
+            rec("b", 500, Status::Done(200)),
+            rec("b", 10, Status::Error("connection refused".into())),
+        ];
+        app
+    }
+
+    #[test]
+    fn filter_tokens_all_match() {
+        let mut app = app3();
+        assert_eq!(app.visible_requests().len(), 3);
+        app.filter = "a >100".into();
+        assert_eq!(app.visible_requests().len(), 0);
+        app.filter = ">100".into();
+        assert_eq!(app.visible_requests().len(), 1);
+        app.filter = "ERROR".into();
+        let v = app.visible_requests();
+        assert!(v.len() == 1 && matches!(v[0].status, Status::Error(_)));
+    }
+
+    #[test]
+    fn j_k_clamp_selection() {
+        let cfg = Config::new("http://x".into(), false);
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        let mut app = app3();
+        app.tab = 2;
+        app.on_key(key('k'), &cfg);
+        assert_eq!(app.selected, 0);
+        for _ in 0..5 {
+            app.on_key(key('j'), &cfg);
+        }
+        assert_eq!(app.selected, 2);
+        app.filter = ">100".into();
+        app.on_key(key('j'), &cfg);
+        assert_eq!(app.selected, 0, "clamped to the filtered list");
     }
 }

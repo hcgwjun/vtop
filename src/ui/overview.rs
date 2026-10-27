@@ -23,6 +23,8 @@ pub fn draw(f: &mut Frame, app: &App, cfg: &Config) {
     f.render_widget(Paragraph::new(header_lines(app, cfg)), header);
     if app.tab == 0 {
         overview(f, app, cfg, body);
+    } else if app.tab == 2 {
+        super::requests_tab::draw(f, app, body);
     } else {
         f.render_widget(Paragraph::new(format!("{} tab is not implemented yet", TABS[app.tab as usize])).dim(), body);
     }
