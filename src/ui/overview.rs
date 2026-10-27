@@ -28,6 +28,8 @@ pub fn draw(f: &mut Frame, app: &App, cfg: &Config) {
         super::engine::draw(f, app, cfg, body);
     } else if app.tab == 2 {
         super::requests_tab::draw(f, app, body);
+    } else if app.tab == 3 {
+        super::hardware::draw(f, app, cfg, body);
     } else {
         f.render_widget(Paragraph::new(format!("{} tab is not implemented yet", TABS[app.tab as usize])).dim(), body);
     }
@@ -243,9 +245,14 @@ pub(super) fn card(f: &mut Frame, app: &App, cfg: &Config, c: &Card, area: Rect)
     if graph.height == 0 {
         return;
     }
-    let points = normalize(&downsample(&app.history.window(c.key, samples_for(app, cfg)), graph.width as usize));
+    f.render_widget(sparkline(app, cfg, c.key, graph.width), graph);
+}
+
+/// The selected window of one history key, downsampled to `width` columns.
+pub(super) fn sparkline(app: &App, cfg: &Config, key: &str, width: u16) -> Sparkline<'static> {
+    let points = normalize(&downsample(&app.history.window(key, samples_for(app, cfg)), width as usize));
     let set = if cfg.ascii { ASCII_BARS } else { bar::NINE_LEVELS };
-    f.render_widget(Sparkline::default().data(points).max(1000).bar_set(set).absent_value_symbol(" "), graph);
+    Sparkline::default().data(points).max(1000).bar_set(set).absent_value_symbol(" ")
 }
 
 fn help_overlay(f: &mut Frame, area: Rect) {
