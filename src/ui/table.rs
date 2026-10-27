@@ -1,73 +1,64 @@
 //! The per-request table shared by the Overview footer and the Requests tab.
 
-use ratatui::style::{Color, Stylize};
-use ratatui::text::{Line, Span};
+use ratatui::style::Stylize;
+use ratatui::text::Line;
 
 use super::format::{na, num};
-use crate::requests::{Record, Status};
+use crate::requests::{Record, hhmmss_local};
 
-const MODEL_W: usize = 30;
-
-/// Header line followed by at most `max_rows` rows, newest first. The MODEL column needs `width >= 100`.
+/// Header line followed by at most `max_rows` rows, newest first. QUEUE and DECODE need `width >= 100`.
 pub fn request_rows(records: &[Record], width: u16, max_rows: usize) -> Vec<Line<'static>> {
-    let model_col = width >= 100;
-    let model = |m: &str| if model_col { format!(" {:<MODEL_W$}", m.chars().take(MODEL_W).collect::<String>()) } else { String::new() };
+    let wide = width >= 100;
+    let mid = |q: String, d: String| if wide { format!(" {q:>8} {d:>8}") } else { String::new() };
     let header = format!(
-        "{:<9} {:<9}{} {:>7} {:>7} {:>8} {:>6} {:>7}",
-        "TIME(UTC)", "STATUS", model("MODEL"), "PROMPT", "OUTPUT", "TTFT ms", "TOK/S", "TIME"
+        "{:<8} {:<16} {:>7} {:>7} {:>8}{} {:>6} {:>7}",
+        "TIME", "ID", "PROMPT", "OUTPUT", "TTFT ms", mid("QUEUE ms".into(), "DECODE s".into()), "TOK/S", "E2E s"
     );
     let mut lines = vec![Line::from(header.dim())];
     for r in records.iter().take(max_rows) {
-        let (status, color) = match &r.status {
-            Status::InFlight => ("in flight".to_string(), Color::Yellow),
-            Status::Done(c) if (200..300).contains(c) => (c.to_string(), Color::Green),
-            Status::Done(c) => (c.to_string(), Color::Red),
-            Status::Error(_) => ("error".to_string(), Color::Red),
-        };
-        let output = na(r.output_tokens, |t| format!("{}{}", if r.approx { "~" } else { "" }, t));
-        let rest = format!(
-            "{} {:>7} {:>7} {:>8} {:>6} {:>7}",
-            model(r.model.as_deref().unwrap_or("-")),
+        let row = format!(
+            "{:<8} {:<16} {:>7} {:>7} {:>8}{} {:>6} {:>7}",
+            hhmmss_local(r.started_unix_ms),
+            short_id(&r.request_id),
             na(r.prompt_tokens, |t| t.to_string()),
-            output,
+            na(r.output_tokens, |t| t.to_string()),
             na(r.ttft_ms, |t| num(t, 0)),
+            mid(na(r.queue_ms, |t| num(t, 0)), na(r.decode_ms, |t| num(t / 1000.0, 1))),
             na(r.tok_s(), |t| num(t, 1)),
-            na(r.duration_ms, |d| format!("{} s", num(d / 1000.0, 1))),
+            na(r.e2e_ms, |t| num(t / 1000.0, 1)),
         );
-        lines.push(Line::from(vec![
-            Span::raw(format!("{:<9} ", crate::requests::hhmmss_utc(r.started_unix_ms))),
-            Span::styled(format!("{status:<9}"), color),
-            Span::raw(rest),
-        ]));
+        lines.push(Line::from(row));
     }
     lines
+}
+
+/// "chatcmpl-92e9abad140f8574" → "92e9abad140f8574": the prefix only says which endpoint was used.
+fn short_id(id: &str) -> String {
+    id.split_once('-').map_or(id, |(_, rest)| rest).chars().take(16).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::requests::{Record, Status};
+    use crate::requests::sample;
+
+    fn text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.to_string()).collect()
+    }
 
     #[test]
-    fn approx_marks_output_with_tilde() {
-        let r = Record {
-            id: 1,
-            started_unix_ms: 0,
-            path: "/v1/chat/completions".into(),
-            model: None,
-            stream: true,
-            status: Status::Done(200),
-            prompt_tokens: None,
-            output_tokens: Some(42),
-            approx: true,
-            ttft_ms: Some(100.0),
-            duration_ms: Some(1100.0),
-        };
-        let rows = request_rows(&[r], 120, 5);
-        let text: String = rows[1].spans.iter().map(|s| s.content.to_string()).collect();
-        assert!(text.contains("~42"), "{text}");
-        let header: String = rows[0].spans.iter().map(|s| s.content.to_string()).collect();
-        assert_eq!(header.find("STATUS"), text.find("200"), "columns line up\n{header}\n{text}");
-        assert!(text.contains("n/a"), "{text}");
+    fn columns_line_up_and_missing_values_are_na() {
+        let mut r = sample("chatcmpl-92e9abad140f8574", 302);
+        r.ttft_ms = Some(420.0);
+        r.decode_ms = Some(1656.0);
+        let mut missing = sample("cmpl-x", 1);
+        missing.output_tokens = None;
+        let rows = request_rows(&[r, missing], 120, 5);
+        let (header, row, row2) = (text(&rows[0]), text(&rows[1]), text(&rows[2]));
+        assert_eq!(header.find("ID"), row.find("92e9abad"), "id column\n{header}\n{row}");
+        assert!(row.contains("182.4") && row.contains("420"), "{row}");
+        assert!(row2.contains("n/a"), "{row2}");
+        assert!(header.contains("QUEUE") && header.contains("DECODE"));
+        assert!(!text(&request_rows(&[], 80, 5)[0]).contains("QUEUE"), "narrow drops queue/decode");
     }
 }

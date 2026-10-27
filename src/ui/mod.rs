@@ -13,9 +13,9 @@ use crate::requests::SharedLog;
 use crate::snapshot::Shared;
 use app::App;
 
-pub fn run(state: Shared, cfg: SharedConfig, log: Option<SharedLog>) -> anyhow::Result<()> {
+pub fn run(state: Shared, cfg: SharedConfig, log: SharedLog) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
-    let mut app = App { proxy_on: log.is_some(), log, ..App::default() };
+    let mut app = App { log, ..App::default() };
     let mut last_draw = Instant::now() - Duration::from_secs(1);
     loop {
         let due = last_draw.elapsed() >= cfg.interval().min(Duration::from_secs(1));

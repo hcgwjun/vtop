@@ -192,10 +192,10 @@ fn overview(f: &mut Frame, app: &App, cfg: &Config, area: Rect) {
     };
     f.render_widget(Paragraph::new(Line::from(vec!["CPU  ".dim(), cpu.into(), "      RAM  ".dim(), ram.into()])), gauges);
     let mut lines = vec![Line::from("Recent requests".bold())];
-    if app.proxy_on {
-        lines.extend(super::table::request_rows(&app.requests, requests.width, requests.height.saturating_sub(2) as usize));
+    if app.requests.is_empty() {
+        lines.push(Line::from("no requests yet — point vLLM's --otlp-traces-endpoint at this vtop (see README)".dim()));
     } else {
-        lines.push(Line::from("start with --proxy to see per-request rows".dim()));
+        lines.extend(super::table::request_rows(&app.requests, requests.width, requests.height.saturating_sub(2) as usize));
     }
     f.render_widget(Paragraph::new(lines), requests);
 }
@@ -298,28 +298,22 @@ mod tests {
     }
 
     #[test]
-    fn overview_shows_recent_requests_when_proxy_on() {
-        use crate::requests::{Record, Status};
-        let done = Record {
-            id: 1,
-            started_unix_ms: 55_431_000,
-            path: "/v1/chat/completions".into(),
-            model: Some("m".into()),
-            stream: true,
-            status: Status::Done(200),
-            prompt_tokens: Some(1200),
-            output_tokens: Some(261),
-            approx: false,
-            ttft_ms: Some(420.0),
-            duration_ms: Some(8700.0),
-        };
-        let in_flight = Record { id: 2, status: Status::InFlight, output_tokens: None, ..done.clone() };
+    fn overview_shows_recent_requests() {
+        use crate::requests::sample;
+        let mut r = sample("chatcmpl-abc", 302);
+        r.ttft_ms = Some(420.0);
+        r.decode_ms = Some(1656.0);
         let mut app = App::default();
-        app.proxy_on = true;
-        app.requests = vec![in_flight, done];
+        app.requests = vec![r];
         let out = render_app(120, 40, &app);
-        assert!(out.contains("261") && out.contains("31.5") && out.contains("in flight"), "{out}");
-        assert!(!out.contains("start with --proxy"), "{out}");
+        assert!(out.contains("302") && out.contains("182.4"), "{out}");
+        assert!(!out.contains("no requests yet"), "{out}");
+    }
+
+    #[test]
+    fn otlp_hint_shown_when_log_empty() {
+        let out = render_app(120, 40, &App::default());
+        assert!(out.contains("no requests yet") && out.contains("otlp-traces-endpoint"), "{out}");
     }
 
     #[test]

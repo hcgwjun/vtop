@@ -1,41 +1,74 @@
-//! Per-request records the proxy fills and the UI reads; a 1,000-slot ring shared behind a mutex.
+//! Per-request records built from vLLM's `llm_request` spans; a 1,000-slot ring shared behind a mutex.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 
-pub const CAPACITY: usize = 1000;
+use crate::otlp::proto::Span;
 
-#[derive(Debug, Clone, Serialize)]
-pub enum Status {
-    InFlight,
-    Done(u16),
-    Error(String),
-}
+pub const CAPACITY: usize = 1000;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Record {
     pub id: u64,
     pub started_unix_ms: u64,
-    pub path: String,
-    pub model: Option<String>,
-    pub stream: bool,
-    pub status: Status,
+    pub request_id: String,
     pub prompt_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
-    /// Output tokens were counted from SSE chunks, not reported by the server.
-    pub approx: bool,
     pub ttft_ms: Option<f64>,
-    pub duration_ms: Option<f64>,
+    pub queue_ms: Option<f64>,
+    pub prefill_ms: Option<f64>,
+    pub decode_ms: Option<f64>,
+    pub e2e_ms: Option<f64>,
+    pub max_tokens: Option<u64>,
 }
 
 impl Record {
-    /// Output tokens per second of decode time (duration minus TTFT); `None` until both are known.
+    /// Only `llm_request` spans describe a request; vLLM also emits loading spans at startup.
+    pub fn from_span(s: &Span) -> Option<Record> {
+        if s.name != "llm_request" {
+            return None;
+        }
+        let ms = |key: &str| s.f64(key).map(|v| v * 1000.0);
+        Some(Record {
+            id: 0,
+            started_unix_ms: s.start_time_unix_nano / 1_000_000,
+            request_id: s.str("gen_ai.request.id").unwrap_or("-").to_string(),
+            prompt_tokens: s.u64("gen_ai.usage.prompt_tokens"),
+            output_tokens: s.u64("gen_ai.usage.completion_tokens"),
+            ttft_ms: ms("gen_ai.latency.time_to_first_token"),
+            queue_ms: ms("gen_ai.latency.time_in_queue"),
+            prefill_ms: ms("gen_ai.latency.time_in_model_prefill"),
+            decode_ms: ms("gen_ai.latency.time_in_model_decode"),
+            e2e_ms: ms("gen_ai.latency.e2e")
+                .or(Some(s.end_time_unix_nano.saturating_sub(s.start_time_unix_nano) as f64 / 1e6)),
+            max_tokens: s.u64("gen_ai.request.max_tokens"),
+        })
+    }
+
+    /// Output tokens per second of decode time; `None` until both are known or when decode took no time.
     pub fn tok_s(&self) -> Option<f64> {
-        let decode_s = (self.duration_ms? - self.ttft_ms.unwrap_or(0.0)) / 1000.0;
+        let decode_s = self.decode_ms? / 1000.0;
         let out = self.output_tokens? as f64;
         (decode_s > 0.0).then(|| out / decode_s)
+    }
+}
+
+#[cfg(test)]
+pub fn sample(request_id: &str, output: u64) -> Record {
+    Record {
+        id: 0,
+        started_unix_ms: 0,
+        request_id: request_id.into(),
+        prompt_tokens: None,
+        output_tokens: Some(output),
+        ttft_ms: None,
+        queue_ms: None,
+        prefill_ms: None,
+        decode_ms: None,
+        e2e_ms: None,
+        max_tokens: None,
     }
 }
 
@@ -57,12 +90,6 @@ impl RequestLog {
         self.next_id
     }
 
-    pub fn update(&mut self, id: u64, f: impl FnOnce(&mut Record)) {
-        if let Some(r) = self.items.iter_mut().rev().find(|r| r.id == id) {
-            f(r);
-        }
-    }
-
     /// Newest first.
     pub fn latest(&self, n: usize) -> Vec<Record> {
         self.items.iter().rev().take(n).cloned().collect()
@@ -75,85 +102,84 @@ impl RequestLog {
 
 pub type SharedLog = Arc<Mutex<RequestLog>>;
 
-/// "20261027-033600" for export file names (UTC, civil-from-days by H. Hinnant).
-pub fn yyyymmdd_hhmmss_utc(unix_ms: u64) -> String {
-    let z = (unix_ms / 86_400_000) as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}{m:02}{d:02}-{}", hhmmss_utc(unix_ms).replace(':', ""))
+/// Broken-down local time (the machine's zone, via libc so no chrono dependency).
+fn local_tm(unix_ms: u64) -> libc::tm {
+    let t = (unix_ms / 1000) as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: both pointers are valid for the call; a null return leaves tm zeroed (1900-01-00 00:00:00)
+    unsafe { libc::localtime_r(&t, &mut tm) };
+    tm
 }
 
-/// "15:33:51". shortcut: UTC (std has no local time zone); the column is labeled TIME(UTC), add chrono if local time is needed.
-pub fn hhmmss_utc(unix_ms: u64) -> String {
-    let s = unix_ms / 1000 % 86_400;
-    format!("{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+/// "15:33:51" in local time.
+pub fn hhmmss_local(unix_ms: u64) -> String {
+    let t = local_tm(unix_ms);
+    format!("{:02}:{:02}:{:02}", t.tm_hour, t.tm_min, t.tm_sec)
+}
+
+/// "20261027-153351" in local time, for export file names.
+pub fn stamp_local(unix_ms: u64) -> String {
+    let t = local_tm(unix_ms);
+    format!("{:04}{:02}{:02}-{:02}{:02}{:02}", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::otlp::proto::parse_spans;
 
-    fn rec() -> Record {
-        Record {
-            id: 0,
-            started_unix_ms: 0,
-            path: "/v1/chat/completions".into(),
-            model: None,
-            stream: false,
-            status: Status::InFlight,
-            prompt_tokens: None,
-            output_tokens: None,
-            approx: false,
-            ttft_ms: None,
-            duration_ms: None,
-        }
-    }
+    const FIXTURE: &[u8] = include_bytes!("../tests/fixtures/otlp_llm_request.bin");
 
     #[test]
     fn log_keeps_last_1000() {
         let mut log = RequestLog::default();
         for _ in 0..1100 {
-            log.push(rec());
+            log.push(sample("x", 1));
         }
         assert_eq!(log.latest(2000).len(), 1000);
         assert_eq!(log.latest(1)[0].id, 1100);
     }
 
     #[test]
-    fn update_by_id() {
-        let mut log = RequestLog::default();
-        let first = log.push(rec());
-        log.push(rec());
-        log.update(first, |r| r.status = Status::Done(200));
-        assert!(matches!(log.latest(2)[1].status, Status::Done(200)));
+    fn record_from_fixture_span() {
+        let r = Record::from_span(&parse_spans(FIXTURE)[0]).unwrap();
+        assert!(r.request_id.starts_with("chatcmpl-"), "{}", r.request_id);
+        assert_eq!((r.prompt_tokens, r.output_tokens), (Some(419), Some(266)));
+        let decode = r.decode_ms.unwrap();
+        assert!((500.0..3000.0).contains(&decode), "{decode}");
+        let tok_s = r.tok_s().unwrap();
+        assert!((50.0..400.0).contains(&tok_s), "{tok_s}");
+        assert!(r.started_unix_ms > 1_700_000_000_000);
+        assert!(r.e2e_ms.unwrap() > r.ttft_ms.unwrap());
     }
 
     #[test]
-    fn tok_s_uses_decode_time() {
-        let mut r = rec();
-        r.output_tokens = Some(300);
-        r.ttft_ms = Some(1000.0);
-        r.duration_ms = Some(4000.0);
-        assert_eq!(r.tok_s(), Some(100.0));
-        r.duration_ms = Some(1000.0);
+    fn other_spans_are_ignored() {
+        let mut s = parse_spans(FIXTURE)[0].clone();
+        s.name = "Overall Loading".into();
+        assert!(Record::from_span(&s).is_none());
+    }
+
+    #[test]
+    fn tok_s_none_when_decode_is_zero() {
+        let mut r = sample("x", 1);
+        r.decode_ms = Some(0.0);
         assert_eq!(r.tok_s(), None);
+        r.decode_ms = Some(500.0);
+        r.output_tokens = Some(100);
+        assert_eq!(r.tok_s(), Some(200.0));
     }
 
     #[test]
-    fn stamp_formats_utc_date_and_time() {
-        assert_eq!(yyyymmdd_hhmmss_utc(1_793_072_160_000), "20261027-033600");
-        assert_eq!(yyyymmdd_hhmmss_utc(0), "19700101-000000");
-    }
-
-    #[test]
-    fn hhmmss_formats_utc() {
-        assert_eq!(hhmmss_utc(0), "00:00:00");
-        assert_eq!(hhmmss_utc(55_431_000), "15:23:51");
+    fn local_time_uses_tz() {
+        unsafe extern "C" {
+            fn tzset(); // not in the libc crate's macOS bindings
+        }
+        unsafe {
+            std::env::set_var("TZ", "Asia/Seoul");
+            tzset();
+        }
+        assert_eq!(hhmmss_local(0), "09:00:00");
+        assert_eq!(stamp_local(0), "19700101-090000");
     }
 }
