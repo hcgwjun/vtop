@@ -1,6 +1,8 @@
 //! UI state: the latest snapshot, sparkline history and what the keys toggle.
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -26,6 +28,8 @@ pub struct App {
     pub selected: usize,
     pub filter: String,
     pub filter_editing: bool,
+    /// Shown in the header for a few seconds (export result).
+    pub notice: Option<(String, Instant)>,
 }
 
 impl Default for App {
@@ -43,6 +47,7 @@ impl Default for App {
             selected: 0,
             filter: String::new(),
             filter_editing: false,
+            notice: None,
         }
     }
 }
@@ -91,6 +96,23 @@ impl App {
             .collect()
     }
 
+    /// Writes `vtop-<YYYYmmdd-HHMMSS>.json` (UTC) with the current snapshot and every recorded request.
+    pub fn export_to(&self, dir: &Path) -> anyhow::Result<PathBuf> {
+        let ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        let path = dir.join(format!("vtop-{}.json", crate::requests::yyyymmdd_hhmmss_utc(ms)));
+        let doc = serde_json::json!({ "snapshot": self.snapshot, "requests": self.requests });
+        std::fs::write(&path, serde_json::to_vec_pretty(&doc)?)?;
+        Ok(path)
+    }
+
+    fn export(&mut self) {
+        let msg = match self.export_to(Path::new(".")) {
+            Ok(p) => format!("saved {}", p.display()),
+            Err(e) => format!("export failed: {e}"),
+        };
+        self.notice = Some((msg, Instant::now()));
+    }
+
     fn clear_requests(&mut self) {
         if let Some(log) = &self.log {
             log.lock().unwrap().clear();
@@ -110,6 +132,24 @@ impl App {
             let i = WINDOWS_MIN.iter().position(|&w| w == cur).unwrap_or(0) as i32 + delta;
             WINDOWS_MIN[i.clamp(0, WINDOWS_MIN.len() as i32 - 1) as usize]
         };
+        if self.filter_editing {
+            // every key is text here, including q: only Enter/Esc leave the mode
+            match key.code {
+                KeyCode::Esc => {
+                    self.filter.clear();
+                    self.filter_editing = false;
+                }
+                KeyCode::Enter => self.filter_editing = false,
+                KeyCode::Backspace => {
+                    self.filter.pop();
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => self.filter.push(c),
+                KeyCode::Char('c') => return true,
+                _ => {}
+            }
+            self.selected = self.selected.min(self.visible_requests().len().saturating_sub(1));
+            return false;
+        }
         match key.code {
             KeyCode::Char('q') => return true,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
@@ -127,6 +167,7 @@ impl App {
             KeyCode::Char('k') if self.tab == 2 => self.selected = self.selected.saturating_sub(1),
             KeyCode::Char('c') if self.tab == 2 => self.clear_requests(),
             KeyCode::Char('/') if self.tab == 2 => self.filter_editing = true,
+            KeyCode::Char('e') => self.export(),
             _ => {}
         }
         self.selected = self.selected.min(self.visible_requests().len().saturating_sub(1));
@@ -201,5 +242,38 @@ mod tests {
         app.filter = ">100".into();
         app.on_key(key('j'), &cfg);
         assert_eq!(app.selected, 0, "clamped to the filtered list");
+    }
+
+    #[test]
+    fn typing_in_filter_does_not_quit() {
+        let cfg = Config::new("http://x".into(), false);
+        let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        let mut app = app3();
+        app.tab = 2;
+        app.on_key(key(KeyCode::Char('/')), &cfg);
+        assert!(!app.on_key(key(KeyCode::Char('q')), &cfg));
+        assert!(!app.on_key(key(KeyCode::Char('c')), &cfg), "ctrl-less c types a char");
+        assert_eq!(app.filter, "qc");
+        assert_eq!(app.requests.len(), 3, "c must not clear while typing");
+        app.on_key(key(KeyCode::Backspace), &cfg);
+        assert_eq!(app.filter, "q");
+        app.on_key(key(KeyCode::Enter), &cfg);
+        assert!(!app.filter_editing && app.filter == "q");
+        app.on_key(key(KeyCode::Char('/')), &cfg);
+        assert!(!app.on_key(key(KeyCode::Esc), &cfg));
+        assert!(!app.filter_editing && app.filter.is_empty());
+    }
+
+    #[test]
+    fn export_writes_json() {
+        let dir = std::env::temp_dir().join(format!("vtop-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = app3().export_to(&dir).unwrap();
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with("vtop-") && name.ends_with(".json"), "{name}");
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["requests"].as_array().unwrap().len(), 3);
+        assert!(v["snapshot"]["vllm"].is_object());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

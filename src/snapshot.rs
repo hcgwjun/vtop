@@ -4,7 +4,9 @@
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-#[derive(Debug, Default, Clone)]
+use serde::Serialize;
+
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct Snapshot {
     pub vllm: Vllm,
     pub gpu: Vec<Gpu>,
@@ -12,10 +14,11 @@ pub struct Snapshot {
     pub process: Option<Process>,
     pub top_processes: Vec<Process>,
     pub errors: Vec<String>,
+    #[serde(skip)]
     pub sampled_at: Option<Instant>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct Vllm {
     pub reachable: bool,
     pub model: Option<String>,
@@ -31,7 +34,7 @@ pub struct Vllm {
     pub preemptions_total: Option<u64>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct Gpu {
     pub name: String,
     pub utilization: Option<f64>,
@@ -43,7 +46,7 @@ pub struct Gpu {
     pub freq_mhz: Option<u32>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct System {
     pub cpu_pct: Option<f64>,
     pub cpu_power_w: Option<f64>,
@@ -58,7 +61,7 @@ pub struct System {
     pub fans: Vec<(String, u32)>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct Process {
     pub pid: u32,
     pub name: String,

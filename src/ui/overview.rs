@@ -12,7 +12,8 @@ use super::format::{Level, bytes, downsample, level, na, normalize, num, uptime}
 use crate::config::Config;
 
 const TABS: [&str; 4] = ["Overview", "Engine", "Requests", "Hardware"];
-const HINTS: &str = "1-4 tabs  +/- interval  [/] window  Space freeze  r reset  ? help  q quit";
+const HINTS: &str = "1-4 tabs  +/- interval  [/] window  Space freeze  r reset  e export  ? help  q quit";
+const HINTS_REQUESTS: &str = "j/k select  / filter  c clear  e export  1-4 tabs  ? help  q quit";
 
 pub fn draw(f: &mut Frame, app: &App, cfg: &Config) {
     let area = f.area();
@@ -28,7 +29,7 @@ pub fn draw(f: &mut Frame, app: &App, cfg: &Config) {
     } else {
         f.render_widget(Paragraph::new(format!("{} tab is not implemented yet", TABS[app.tab as usize])).dim(), body);
     }
-    f.render_widget(Paragraph::new(HINTS).dim(), hints);
+    f.render_widget(Paragraph::new(if app.tab == 2 { HINTS_REQUESTS } else { HINTS }).dim(), hints);
     if app.help {
         help_overlay(f, area);
     }
@@ -56,6 +57,11 @@ fn header_lines(app: &App, cfg: &Config) -> Vec<Line<'static>> {
     line1.push(format!(" ⟳{:.1}s {}m", interval.as_secs_f64(), app.window_min).dim());
     if app.frozen {
         line1.push(" FROZEN".yellow().bold());
+    }
+    if let Some((msg, at)) = &app.notice
+        && at.elapsed().as_secs() < 5
+    {
+        line1.push(format!("  {msg}").yellow());
     }
     let line2 = match &s.process {
         Some(p) => format!(
@@ -252,11 +258,15 @@ fn help_overlay(f: &mut Frame, area: Rect) {
         "[ / ]    sparkline window 1 / 5 / 30 min",
         "Space    freeze screen (collection continues)",
         "r        reset sparklines and tok/s baseline",
+        "j / k    requests: move selection",
+        "/        requests: filter (Enter keeps, Esc clears); >N = output tokens >= N",
+        "c        requests: clear the log",
+        "e        export snapshot + requests to vtop-<time>.json",
         "?        this help",
         "q / Esc  quit / close",
     ];
-    let w = 56u16.min(area.width);
-    let h = text.len() as u16 + 2;
+    let w = 74u16.min(area.width);
+    let h = (text.len() as u16 + 2).min(area.height);
     let popup = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);
     f.render_widget(Clear, popup);
     f.render_widget(Paragraph::new(text.join("\n")).block(Block::bordered().title(" Keys ")), popup);
@@ -409,5 +419,12 @@ mod tests {
         assert_eq!(app.window_min, 30);
         assert!(!app.on_key(key(' '), &cfg) && app.frozen);
         assert!(app.on_key(key('q'), &cfg));
+    }
+
+    #[test]
+    fn help_overlay_fits_small_terminal() {
+        let app = App { help: true, ..App::default() };
+        let out = render_app(30, 6, &app);
+        assert!(out.contains("Keys"), "{out}");
     }
 }
