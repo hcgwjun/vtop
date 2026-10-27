@@ -7,7 +7,8 @@ A single-binary terminal monitor for [vLLM](https://github.com/vllm-project/vllm
 Prebuilt binaries for macOS (Apple Silicon) and Linux (x86_64, aarch64):
 
 ```sh
-# Homebrew (macOS, Linux)
+# Homebrew (macOS, Linux) — recent Homebrew asks you to trust a third-party tap first
+brew tap hcgwjun/tap && brew trust hcgwjun/tap
 brew install hcgwjun/tap/vtop
 
 # or the installer script (puts vtop in ~/.cargo/bin)
