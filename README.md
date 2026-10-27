@@ -16,15 +16,15 @@ cargo install --path .
 ```sh
 vtop --url http://127.0.0.1:8000     # vLLM base URL (default)
 vtop --ascii                         # plain ASCII sparklines
-vtop --proxy                         # also record per-request stats (see below)
+vtop --proxy 8888                    # proxy port (default 30800, see below)
 ```
 
-## Per-request stats (`--proxy`)
+## Per-request stats (proxy)
 
-vLLM's `/metrics` has no per-request numbers, so vtop can sit in front of the server as an OpenAI-compatible pass-through: it forwards every request and response byte-for-byte to `--url` (same path, method, headers, status, SSE stream) and records, per request, the model, status, prompt/output tokens, TTFT, duration and decode tok/s. The proxy listens on `127.0.0.1:30800` (localhost only; `--proxy 9000` picks another port if that one is taken). Point clients at it instead of vLLM:
+vLLM's `/metrics` has no per-request numbers, so vtop always runs an OpenAI-compatible pass-through in front of the server: it forwards every request and response byte-for-byte to `--url` (same path, method, headers, status, SSE stream) and records, per request, the model, status, prompt/output tokens, TTFT, duration and decode tok/s. The proxy listens on `127.0.0.1:30800` (localhost only; `--proxy 8888` picks another port if that one is taken — vtop exits with `cannot bind proxy` otherwise). Point clients at it instead of vLLM:
 
 ```sh
-vtop --url http://127.0.0.1:8000 --proxy
+vtop --url http://127.0.0.1:8000
 export OPENAI_BASE_URL=http://127.0.0.1:30800/v1       # OpenAI SDK
 export VL_REC_SERVER_URL=http://localhost:30800/v1     # paddlex OCR
 ```
