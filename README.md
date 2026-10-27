@@ -2,57 +2,60 @@
 
 A single-binary terminal monitor for [vLLM](https://github.com/vllm-project/vllm) on macOS (vllm-metal) and Linux (NVIDIA). One screen shows the server (tok/s, running/waiting requests, KV cache) next to the hardware (GPU load, memory, power, temperature, CPU, RAM), plus a per-request table (TTFT, queue, prefill, decode, tokens) fed by vLLM's own request traces. Same layout on both platforms; `n/a` where a platform has no value.
 
-## 1. Install vtop
+## Quick start
 
-Prebuilt binaries for macOS (Apple Silicon) and Linux (x86_64, aarch64):
+### 1. Install
+
+Pick one. All three put a `vtop` binary on your PATH.
 
 ```sh
-# Homebrew (macOS, Linux) — recent Homebrew asks you to trust a third-party tap first
+# Homebrew (macOS or Linux). Recent Homebrew asks you to trust a third-party tap once.
 brew tap hcgwjun/tap && brew trust hcgwjun/tap
 brew install hcgwjun/tap/vtop
 
-# or the installer script (puts vtop in ~/.cargo/bin)
+# Installer script (macOS Apple Silicon, Linux x86_64/aarch64) — installs to ~/.cargo/bin
 curl -LsSf https://github.com/hcgwjun/vtop/releases/latest/download/vtop-installer.sh | sh
 
-# or with a Rust toolchain
-cargo install vtop            # from crates.io
-cargo install --path .        # from this checkout
+# From source, with a Rust toolchain (https://rustup.rs)
+cargo install vtop
 ```
 
-Archives for each platform are on the [releases page](https://github.com/hcgwjun/vtop/releases).
+Archives and checksums for each platform are on the [releases page](https://github.com/hcgwjun/vtop/releases).
 
 - macOS: nothing else. Apple Silicon power and temperature come from the [macmon](https://github.com/vladkens/macmon) library compiled in — no sudo, no extra tools.
-- Linux: an NVIDIA driver (NVML). Without one the GPU cards show `n/a`.
+- Linux: an NVIDIA driver (NVML) for the GPU cards. Without one they show `n/a`; everything else works.
 
-## 2. Let vLLM send request traces
+### 2. Tell vLLM to send request traces
 
-vLLM's `/metrics` has only aggregate numbers. Per-request rows come from vLLM's OpenTelemetry tracing: every finished request produces one `llm_request` span with TTFT, queue/prefill/decode time and token counts. vtop receives those spans on `127.0.0.1:4318`, so neither your clients nor the vLLM port change.
+Skip this if you only want the server and hardware cards. The per-request table (TTFT, queue, prefill, decode, tokens) comes from vLLM's OpenTelemetry tracing, which vtop receives on `127.0.0.1:4318`. Your clients and the vLLM port do not change.
 
 In the environment that runs vLLM:
 
 ```sh
-# once: the exporter packages (already present if you installed vllm-metal)
-pip install opentelemetry-sdk opentelemetry-exporter-otlp
+pip install opentelemetry-sdk opentelemetry-exporter-otlp     # once; vllm-metal already has them
 
-# every start: send spans over HTTP and flush within 1 s instead of the 5 s default
-export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf
-export OTEL_BSP_SCHEDULE_DELAY=1000
-
+export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf        # vtop speaks HTTP, not gRPC
+export OTEL_BSP_SCHEDULE_DELAY=1000                            # rows appear within 1 s instead of 5 s
 vllm serve <model> --port 8000 --otlp-traces-endpoint http://127.0.0.1:4318/v1/traces
 ```
 
-Put the two `export` lines in the shell profile or the script that starts vLLM. Without the first one vLLM exports over gRPC, which vtop does not speak; without the second, rows appear about 5 s after a request finishes. vLLM starts fine when vtop is not running — spans it cannot deliver are dropped after a few retries.
+Put the two `export` lines in your shell profile or the script that starts vLLM. vLLM starts fine when vtop is not running; spans it cannot deliver are dropped after a few retries.
 
-## 3. Run
+### 3. Run
 
 ```sh
-vtop                                   # vLLM at http://127.0.0.1:8000, spans on 127.0.0.1:4318
-vtop --url http://127.0.0.1:8111       # another vLLM base URL
-vtop --otlp 4319                       # another span port (then point --otlp-traces-endpoint at :4319)
+vtop                                   # vLLM at http://127.0.0.1:8000
+vtop --url http://127.0.0.1:8111       # another vLLM base URL (a /v1 suffix is fine)
+vtop --otlp 4319                       # another span port (then use :4319 in step 2)
 vtop --ascii                           # plain ASCII sparklines
 ```
 
-vtop exits with `cannot bind otlp receiver` when the port is taken (another vtop, or an OpenTelemetry collector on the default 4318) — pick another port with `--otlp`.
+### 4. Check
+
+- The header shows `LIVE` and the model name: `/metrics` is reachable. `DISCONNECTED`: check `--url`.
+- Send one request. A row appears under "Recent requests" within about a second. If not, check vLLM's startup log for `otlp_traces_endpoint` and the two `OTEL_` variables.
+- `vtop` exits with `cannot bind otlp receiver`: port 4318 is taken (another vtop or an OpenTelemetry collector) — use `--otlp`.
+- `?` lists the keys, `q` quits.
 
 ## Screens
 
