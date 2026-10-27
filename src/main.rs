@@ -1,6 +1,7 @@
 mod collectors;
 mod config;
 mod history;
+mod proxy;
 mod requests;
 mod snapshot;
 mod ui;
