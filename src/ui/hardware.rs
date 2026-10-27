@@ -11,7 +11,7 @@ use super::format::{bar, bytes, na, num};
 use super::overview::sparkline;
 use crate::config::Config;
 
-const CORE_CELL: u16 = 14; // "c12 ██████ 100" plus a gap
+const CORE_CELL: u16 = 15; // "c12  ██████ 100" plus a gap
 const MAX_CORE_ROWS: u16 = 4;
 const MAX_PROCS: usize = 5;
 
@@ -95,7 +95,7 @@ fn cpu_lines(app: &App, cfg: &Config, per_row: usize, rows: usize) -> Vec<Line<'
         let cells: Vec<String> = chunk
             .iter()
             .enumerate()
-            .map(|(i, pct)| format!("{:<3}{} {:>3}", format!("c{}", row_start * per_row + i), bar(pct / 100.0, 6, cfg.ascii), num(*pct, 0)))
+            .map(|(i, pct)| format!("{:<4}{} {:>3}", format!("c{}", row_start * per_row + i), bar(pct / 100.0, 6, cfg.ascii), num(*pct, 0)))
             .collect();
         lines.push(Line::from(cells.join(" ")));
     }

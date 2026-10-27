@@ -28,10 +28,8 @@ pub fn draw(f: &mut Frame, app: &App, cfg: &Config) {
         super::engine::draw(f, app, cfg, body);
     } else if app.tab == 2 {
         super::requests_tab::draw(f, app, body);
-    } else if app.tab == 3 {
-        super::hardware::draw(f, app, cfg, body);
     } else {
-        f.render_widget(Paragraph::new(format!("{} tab is not implemented yet", TABS[app.tab as usize])).dim(), body);
+        super::hardware::draw(f, app, cfg, body);
     }
     f.render_widget(Paragraph::new(if app.tab == 2 { HINTS_REQUESTS } else { HINTS }).dim(), hints);
     if app.help {

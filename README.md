@@ -57,6 +57,8 @@ vtop exits with `cannot bind otlp receiver` when the port is taken (another vtop
 
 **Overview** (`1`): eight cards with sparklines, CPU/RAM gauges, and the most recent requests.
 
+**Engine** (`2`): scheduler (running, waiting, preemptions), KV and prefix cache, and the TTFT and end-to-end latency histograms vLLM has accumulated since it started.
+
 **Requests** (`3`): every recorded request (last 1,000), a cursor, a filter line and the detail of the selected row.
 
 | Column | Meaning |
@@ -72,11 +74,13 @@ vtop exits with `cannot bind otlp receiver` when the port is taken (another vtop
 
 Requests that never reach the engine (bad model name, context overflow) produce no span and no row.
 
+**Hardware** (`4`): one row per GPU (utilization, memory, power and limit, temperature, clock), per-core CPU bars, RAM/swap/fans, disk and network throughput with sparklines, and the five busiest processes (GPU memory per process on Linux only).
+
 ## Keys
 
 | Key | Action |
 |---|---|
-| `1`–`4` | Overview / Engine / Requests / Hardware (tabs 2 and 4: next version) |
+| `1`–`4` | Overview / Engine / Requests / Hardware |
 | `+` / `-` | sampling interval 0.5 / 1 / 2 / 5 / 10 s |
 | `[` / `]` | sparkline window 1 / 5 / 30 min |
 | `Space` | freeze the screen (collection continues) |
@@ -87,5 +91,3 @@ Requests that never reach the engine (bad model name, context overflow) produce 
 | `e` | export the snapshot and all recorded requests to `vtop-<YYYYmmdd-HHMMSS>.json` in the current directory |
 | `?` | help |
 | `q` / `Esc` | quit / close |
-
-Next version: Engine tab, Hardware tab (process table, per-GPU rows).

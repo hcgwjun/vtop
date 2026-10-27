@@ -29,7 +29,6 @@ pub struct Vllm {
     pub prompt_tok_s: Option<f64>,
     pub generation_tok_s: Option<f64>,
     pub ttft_p50_ms: Option<f64>,
-    #[allow(dead_code)] // read by the Engine tab (next plan)
     pub ttft_p99_ms: Option<f64>,
     pub preemptions_total: Option<u64>,
     /// `(le, count in this bucket)` ascending, last `le` is +Inf; empty until the server has samples.
@@ -74,7 +73,6 @@ pub struct Process {
     pub cpu_pct: f64,
     pub rss: u64,
     pub threads: Option<u64>,
-    #[allow(dead_code)] // read by the Hardware tab (next plan)
     pub gpu_mem: Option<u64>,
 }
 

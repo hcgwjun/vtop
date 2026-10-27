@@ -74,11 +74,12 @@ fn histogram(f: &mut Frame, cfg: &Config, area: Rect, title: &'static str, bucke
     f.render_widget(Paragraph::new(lines), area);
 }
 
-/// `(label, count)` from the first non-empty bucket on: "0.25–0.5 s", "1–2.5 s", ">10 s".
+/// `(label, count)` from the first to the last non-empty bucket: "0.25–0.5 s", "1–2.5 s", ">10 s".
 fn hist_rows(buckets: &[(f64, u64)]) -> Vec<(String, u64)> {
     let Some(first) = buckets.iter().position(|(_, c)| *c > 0) else { return Vec::new() };
+    let last = buckets.iter().rposition(|(_, c)| *c > 0).unwrap_or(first);
     let mut lo = if first == 0 { 0.0 } else { buckets[first - 1].0 };
-    buckets[first..]
+    buckets[first..=last]
         .iter()
         .map(|&(le, c)| {
             let label = if le.is_infinite() { format!(">{} s", secs(lo)) } else { format!("{}–{} s", secs(lo), secs(le)) };
@@ -123,7 +124,7 @@ mod tests {
                 ttft_p50_ms: Some(420.0),
                 ttft_p99_ms: Some(1980.0),
                 ttft_buckets: vec![(0.25, 0), (0.5, 10), (1.0, 30), (f64::INFINITY, 2)],
-                e2e_buckets: vec![(1.0, 5), (f64::INFINITY, 0)],
+                e2e_buckets: vec![(1.0, 5), (2.0, 0), (f64::INFINITY, 0)],
                 ..Default::default()
             },
             ..Default::default()
@@ -137,6 +138,7 @@ mod tests {
             assert!(out.contains(needle), "missing {needle:?}\n{out}");
         }
         assert!(!out.contains("0–0.25 s"), "leading empty buckets are hidden\n{out}");
+        assert!(!out.contains("1–2 s"), "trailing empty buckets are hidden\n{out}");
     }
 
     #[test]
