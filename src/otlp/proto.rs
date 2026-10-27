@@ -74,11 +74,10 @@ impl Span {
     }
 }
 
-/// Every span in an OTLP export request; a body that does not decode gives none.
-pub fn parse_spans(body: &[u8]) -> Vec<Span> {
+/// Every span in an OTLP export request.
+pub fn parse_spans(body: &[u8]) -> Result<Vec<Span>, prost::DecodeError> {
     ExportTraceServiceRequest::decode(body)
         .map(|r| r.resource_spans.into_iter().flat_map(|rs| rs.scope_spans).flat_map(|ss| ss.spans).collect())
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -89,7 +88,7 @@ mod tests {
 
     #[test]
     fn fixture_has_one_llm_request_span() {
-        let spans = parse_spans(FIXTURE);
+        let spans = parse_spans(FIXTURE).unwrap();
         assert_eq!(spans.len(), 1);
         let s = &spans[0];
         assert_eq!(s.name, "llm_request");
@@ -103,7 +102,7 @@ mod tests {
 
     #[test]
     fn unknown_fields_and_spans_are_skipped() {
-        assert!(parse_spans(b"\x00\x01garbage").is_empty());
-        assert_eq!(parse_spans(FIXTURE)[0].f64("nope"), None);
+        assert!(parse_spans(b"\x00\x01garbage").is_err());
+        assert_eq!(parse_spans(FIXTURE).unwrap()[0].f64("nope"), None);
     }
 }

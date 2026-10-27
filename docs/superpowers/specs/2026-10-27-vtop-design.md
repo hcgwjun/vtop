@@ -13,7 +13,7 @@
 
 ## 범위
 
-포함: Overview 탭(첫 버전), Engine / Requests / Hardware 탭(이후), 선택 기능인 OpenAI 호환 프록시.
+포함: Overview 탭(첫 버전), Engine / Requests / Hardware 탭(이후), vLLM OTLP 스팬 수신(요청별 기록).
 제외: Strata의 Connect·Logs 탭, 원격 에이전트, 설정 파일, 테마 전환, vLLM 외 서버 어댑터.
 
 ## 스택
@@ -23,7 +23,7 @@ Rust 2024, 단일 프로세스.
 | 역할 | 크레이트 |
 |---|---|
 | TUI | ratatui 0.30 + crossterm |
-| HTTP 클라이언트 / 프록시 | reqwest(rustls) / axum + tokio |
+| HTTP 클라이언트 / 스팬 수신 | reqwest(rustls) / axum + tokio + prost |
 | CPU·RAM·디스크·넷 | sysinfo |
 | 맥 전력·주파수·온도·팬 | macmon 0.10 (라이브러리, `target_os = "macos"`) |
 | 맥 GPU 메모리 | `ioreg -r -d1 -c IOAccelerator`의 `PerformanceStatistics` (IOReport에 없음) |
@@ -37,7 +37,7 @@ main ─ clap ─┬─ collectors::spawn(url, interval)  ── Arc<RwLock<Snap
              │     ├ vllm 스레드     GET /metrics → 파싱 → 차분 → Snapshot.vllm │
              │     ├ system 스레드   sysinfo → Snapshot.system                  │
              │     └ hw 스레드       macmon | NVML → Snapshot.gpu, power, temp  │
-             ├─ proxy (선택, tokio)  /v1/* 통과 + 요청 기록 → RequestLog        │
+             ├─ otlp (tokio)  POST /v1/traces 스팬 수신 → RequestLog               │
              └─ ui::run             1초(또는 설정 주기)마다 Snapshot 읽어 그림 ◄┘
 ```
 
@@ -78,13 +78,14 @@ sysinfo로 CPU 사용률, RAM, 스왑, 디스크·넷 바이트 차분. 같은 �
 ### hw_linux
 NVML `device_count` → 장치별 `utilization_rates().gpu`, `memory_info()`, `power_usage()`, `enforced_power_limit()`, `temperature()`, `clock_info(Graphics)`.
 
-## 프록시 (선택, `--proxy 0.0.0.0:8001`)
+## 요청별 기록 (vLLM OTLP 스팬, 2026-10-27 개정 — 프록시 대체)
 
-- axum이 `/v1/*`를 받아 `{url}`로 그대로 전달. 헤더와 바디는 수정 없이 스트리밍 통과(복사 없이 `Body::from_stream`).
-- 요청별 기록: 시작 시각, 모델, 상태(진행/완료/오류), 프롬프트 토큰, 출력 토큰, TTFT(첫 바이트까지), 총 시간, tok/s.
-- 토큰 수: 응답의 `usage`(비스트리밍, 또는 `stream_options.include_usage`일 때 마지막 청크)를 우선 쓰고, 없으면 SSE `data:` 청크 수로 출력 토큰을 근사하고 표에 `~`를 붙인다. 프롬프트 토큰은 그 경우 `n/a`.
-- OpenAI SDK 호환 규칙: 상태 코드·헤더·SSE 형식을 바꾸지 않는다. vtop 자체 응답은 내지 않는다(업스트림 불통이면 502 그대로).
-- 기록은 최근 1,000건 링버퍼. 프록시가 꺼져 있으면 Overview의 요청 표 자리에 `--proxy로 켜면 요청별 기록이 보입니다` 한 줄.
+- vLLM을 `--otlp-traces-endpoint http://127.0.0.1:4318/v1/traces`로 띄우고(`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf`, `OTEL_BSP_SCHEDULE_DELAY=1000`), vtop이 `127.0.0.1:4318`(`--otlp PORT`)에서 `POST /v1/traces`를 받는다. 클라이언트와 vLLM 포트는 그대로.
+- 요청별 기록: 도착 시각(로컬 시간대), request id, 프롬프트·출력 토큰, TTFT, 큐 대기, 프리필, 디코드, e2e, max_tokens. tok/s = 출력 ÷ 디코드.
+- `llm_request` 스팬만 기록. 엔진에 못 들어간 요청(400/404)은 스팬이 없어 보이지 않는다. 모델명은 스팬에 없으므로 헤더의 모델명으로 본다.
+- protobuf는 손으로 쓴 prost 구조체로 필요한 필드만 읽는다. 디코드 실패는 400(OTLP 규약, vLLM 로그에 실패가 남게), 그 외 200 + 빈 본문.
+- 기록은 최근 1,000건 링버퍼. 비어 있으면 Overview 표 자리에 `no requests yet — point vLLM's --otlp-traces-endpoint at this vtop` 한 줄.
+- 처음 설계했던 OpenAI 호환 통과 프록시(`--proxy`)는 만들었다가 뺐다: 클라이언트 base_url을 바꿔야 하고, 큐·프리필·디코드 시간을 알 수 없으며, HTTP 수준 오류는 필요하지 않았다.
 
 ## 화면
 
@@ -103,7 +104,7 @@ NVML `device_count` → 장치별 `utilization_rates().gpu`, `memory_info()`, `p
 │ ▇▇▇▇▇▇▇▇▇▇▇▇▇▇ ││ ▆▆▆▆▆▆▆▆▆▆▆▆▆▆ ││ ▅▆▆▇▇▇▆▆▆▆▇▇▆▆ ││ ▄▄▅▅▅▅▅▅▅▅▅▅▅▅ │
 └────────────────┘└────────────────┘└────────────────┘└────────────────┘
 CPU  ████████░░░░ 62 %      RAM  ██████████░░ 15.9 / 24 GB
-Recent requests (proxy)
+Recent requests (vLLM spans)
 TIME      STATUS  MODEL          PROMPT  OUTPUT  TTFT    TOK/S  TIME
 15:33:51  done    qwen3-8b        18,187     261  0.42s   36.3   8.7s
 ```
@@ -113,7 +114,7 @@ TIME      STATUS  MODEL          PROMPT  OUTPUT  TTFT    TOK/S  TIME
 스케줄러(실행·대기·preemption), KV·prefix 캐시 사용률과 적중률, TTFT·E2E 지연 히스토그램을 가로 막대로.
 
 ### Requests
-프록시 기록 전체 표, `/` 필터, `j/k` 이동, 선택 행 상세(요청 헤더 일부, 오류 본문).
+스팬 기록 전체 표, `/` 필터(request id 부분 일치, `>N` 출력 토큰), `j/k` 이동, 선택 행 상세(토큰, ttft/큐/프리필/디코드/e2e).
 
 ### Hardware
 GPU별 행(사용률·메모리·전력·온도·클럭), CPU 코어별 막대, 팬, 디스크·넷 I/O 스파크라인, 프로세스 표(CPU 상위 5개: PID·이름·CPU%·RSS·GPU 메모리(리눅스만)).
@@ -138,13 +139,12 @@ GPU별 행(사용률·메모리·전력·온도·클럭), CPU 코어별 막대, 
 
 - 수집기 오류는 영역을 `None`으로 두고 헤더 오른쪽에 마지막 오류 한 줄(흐리게). 패닉은 UI 스레드에서만 잡아 터미널을 복구한 뒤 종료.
 - `/metrics` 파싱은 모르는 줄을 무시한다. 카운터가 줄어들면(서버 재시작) 차분을 버리고 기준점을 다시 잡는다.
-- 프록시 업스트림 오류는 그대로 통과시키고 기록에 `error <status>`로 남긴다.
 
 ## 테스트
 
 - `collectors::vllm::parse`: 실제 vLLM `/metrics` 샘플 파일로 단위 테스트(v0, v1 각 하나).
 - 차분 계산: 카운터 감소 시 기준점 리셋 테스트.
-- 프록시: 가짜 업스트림(axum)으로 스트리밍 청크 통과와 `usage` 집계 테스트.
+- 스팬 수신: vLLM 0.31이 보낸 실제 protobuf 픽스처로 파서·수신 라우트 테스트.
 - hw: 각 OS에서 `Sampler`/NVML이 한 번 샘플링되는 스모크 테스트(이미 macOS용 1개 있음).
 - UI: 스냅샷 하나를 `TestBackend`로 그려 카드 텍스트가 나오는지 스냅샷 테스트 1개.
 
@@ -153,6 +153,6 @@ GPU별 행(사용률·메모리·전력·온도·클럭), CPU 코어별 막대, 
 1. vllm 수집기 + Overview 상단 카드 4개 (서버 없이도 `DISCONNECTED`로 뜸)
 2. system + hw_macos / hw_linux 수집기 + 하단 카드 4개, CPU/RAM 게이지
 3. 단축키 전부, 스파크라인 시간창
-4. 프록시 + 요청 표
+4. OTLP 스팬 수신 + 요청 표
 5. Engine, Hardware, Requests 탭
 6. `cargo build --release` 바이너리를 GitHub Releases로 (macOS arm64, linux x86_64)

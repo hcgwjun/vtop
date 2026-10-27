@@ -32,9 +32,10 @@ pub fn request_rows(records: &[Record], width: u16, max_rows: usize) -> Vec<Line
     lines
 }
 
-/// "chatcmpl-92e9abad140f8574" → "92e9abad140f8574": the prefix only says which endpoint was used.
+/// "chatcmpl-92e9abad140f8574" → "92e9abad140f8574": vLLM's prefix only says which endpoint was used.
 fn short_id(id: &str) -> String {
-    id.split_once('-').map_or(id, |(_, rest)| rest).chars().take(16).collect()
+    let id = id.strip_prefix("chatcmpl-").or_else(|| id.strip_prefix("cmpl-")).unwrap_or(id);
+    id.chars().take(16).collect()
 }
 
 #[cfg(test)]
@@ -60,5 +61,12 @@ mod tests {
         assert!(row2.contains("n/a"), "{row2}");
         assert!(header.contains("QUEUE") && header.contains("DECODE"));
         assert!(!text(&request_rows(&[], 80, 5)[0]).contains("QUEUE"), "narrow drops queue/decode");
+    }
+
+    #[test]
+    fn short_id_strips_only_known_prefixes() {
+        assert_eq!(short_id("chatcmpl-92e9abad140f8574"), "92e9abad140f8574");
+        assert_eq!(short_id("cmpl-abc"), "abc");
+        assert_eq!(short_id("1946fac8-d423-4c99-889b-6f0e"), "1946fac8-d423-4c");
     }
 }

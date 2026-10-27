@@ -20,7 +20,7 @@ pub struct App {
     pub frozen: bool,
     pub help: bool,
     pub tab: u8,
-    /// Newest first; refilled from the proxy log every tick.
+    /// Newest first; refilled from the span log every tick.
     pub requests: Vec<Record>,
     pub log: SharedLog,
     /// Index into `visible_requests()`.
@@ -74,11 +74,12 @@ impl App {
     }
 
     pub fn ingest_log(&mut self) {
-        let top = self.requests.first().map_or(0, |r| r.id);
+        // the cursor follows its row by id as newer rows are inserted above; row 0 keeps tailing the newest
+        let followed = (self.selected > 0).then(|| self.visible_requests().get(self.selected).map(|r| r.id)).flatten();
         self.requests = self.log.lock().unwrap().latest(crate::requests::CAPACITY);
-        // keep the cursor on its row as newer rows are inserted above; row 0 keeps tailing the newest
-        if self.selected > 0 {
-            self.selected += self.requests.iter().take_while(|r| r.id > top).count();
+        if let Some(id) = followed {
+            let visible = self.visible_requests();
+            self.selected = visible.iter().position(|r| r.id == id).unwrap_or(visible.len().saturating_sub(1));
         }
     }
 
@@ -97,7 +98,7 @@ impl App {
             .collect()
     }
 
-    /// Writes `vtop-<YYYYmmdd-HHMMSS>.json` (UTC) with the current snapshot and every recorded request.
+    /// Writes `vtop-<YYYYmmdd-HHMMSS>.json` (local time) with the current snapshot and every recorded request.
     pub fn export_to(&self, dir: &Path) -> anyhow::Result<PathBuf> {
         let ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
         let path = dir.join(format!("vtop-{}.json", crate::requests::stamp_local(ms)));
@@ -257,6 +258,25 @@ mod tests {
         app.tab = 2;
         app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE), &cfg);
         assert!(app.requests.is_empty() && app.log.lock().unwrap().latest(1).is_empty());
+    }
+
+    #[test]
+    fn selection_follows_its_row_under_a_filter_and_at_capacity() {
+        let mut app = App::default();
+        for i in 0..3 {
+            app.log.lock().unwrap().push(sample(&format!("r{i}"), 500));
+        }
+        app.ingest_log();
+        app.filter = ">100".into();
+        app.selected = 2; // r0, the oldest visible row
+        app.log.lock().unwrap().push(sample("short", 1)); // filtered out: must not shift the cursor
+        app.ingest_log();
+        assert_eq!(app.visible_requests()[app.selected].request_id, "r0");
+        for _ in 0..crate::requests::CAPACITY {
+            app.log.lock().unwrap().push(sample("fill", 500));
+        }
+        app.ingest_log();
+        assert!(app.selected < app.visible_requests().len(), "r0 rotated out: cursor clamped, not lost");
     }
 
     #[test]

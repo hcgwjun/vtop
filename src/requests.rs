@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn record_from_fixture_span() {
-        let r = Record::from_span(&parse_spans(FIXTURE)[0]).unwrap();
+        let r = Record::from_span(&parse_spans(FIXTURE).unwrap()[0]).unwrap();
         assert!(r.request_id.starts_with("chatcmpl-"), "{}", r.request_id);
         assert_eq!((r.prompt_tokens, r.output_tokens), (Some(419), Some(266)));
         let decode = r.decode_ms.unwrap();
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn other_spans_are_ignored() {
-        let mut s = parse_spans(FIXTURE)[0].clone();
+        let mut s = parse_spans(FIXTURE).unwrap()[0].clone();
         s.name = "Overall Loading".into();
         assert!(Record::from_span(&s).is_none());
     }
@@ -170,15 +170,20 @@ mod tests {
         assert_eq!(r.tok_s(), Some(200.0));
     }
 
+    /// Runs in a child process: setting TZ in this process would race the other tests' localtime_r calls.
     #[test]
     fn local_time_uses_tz() {
-        unsafe extern "C" {
-            fn tzset(); // not in the libc crate's macOS bindings
-        }
-        unsafe {
-            std::env::set_var("TZ", "Asia/Seoul");
-            tzset();
-        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "requests::tests::local_time_child"])
+            .env("TZ", "Asia/Seoul")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    }
+
+    #[test]
+    #[ignore = "driven by local_time_uses_tz with TZ=Asia/Seoul"]
+    fn local_time_child() {
         assert_eq!(hhmmss_local(0), "09:00:00");
         assert_eq!(stamp_local(0), "19700101-090000");
     }

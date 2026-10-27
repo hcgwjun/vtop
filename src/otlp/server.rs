@@ -5,8 +5,9 @@ use std::thread::JoinHandle;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
+use axum::http::StatusCode;
 use axum::http::header::CONTENT_TYPE;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 
 use super::proto::parse_spans;
@@ -16,15 +17,18 @@ pub fn router(log: SharedLog) -> Router {
     Router::new().route("/v1/traces", post(traces)).layer(DefaultBodyLimit::max(16 << 20)).with_state(log)
 }
 
-/// Always 200: a body we cannot read is dropped rather than making vLLM retry it forever.
-async fn traces(State(log): State<SharedLog>, body: Bytes) -> impl IntoResponse {
-    let records: Vec<Record> = parse_spans(&body).iter().filter_map(Record::from_span).collect();
+/// 400 on a body that is not protobuf (OTLP says so, and vLLM then logs the failure instead of silently
+/// exporting into the void, e.g. with http/json or gzip set); otherwise 200 with an empty response message.
+async fn traces(State(log): State<SharedLog>, body: Bytes) -> Response {
+    let Ok(spans) = parse_spans(&body) else {
+        return (StatusCode::BAD_REQUEST, "vtop: body is not an OTLP protobuf ExportTraceServiceRequest").into_response();
+    };
+    let records: Vec<Record> = spans.iter().filter_map(Record::from_span).collect();
     let mut log = log.lock().unwrap();
     for r in records {
         log.push(r);
     }
-    // an empty ExportTraceServiceResponse encodes to zero bytes
-    ([(CONTENT_TYPE, "application/x-protobuf")], Bytes::new())
+    ([(CONTENT_TYPE, "application/x-protobuf")], Bytes::new()).into_response()
 }
 
 /// Binds now (so a taken port fails before the TUI starts) and serves on its own runtime thread.
@@ -77,10 +81,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn garbage_body_is_acknowledged_without_rows() {
+    async fn garbage_body_gets_400_without_rows() {
         let log = SharedLog::default();
-        assert_eq!(post(&log, b"nope".to_vec()).await.status(), StatusCode::OK);
+        assert_eq!(post(&log, b"nope".to_vec()).await.status(), StatusCode::BAD_REQUEST);
         assert_eq!(log.lock().unwrap().latest(10).len(), 0);
+    }
+
+    #[tokio::test]
+    async fn empty_valid_body_is_200() {
+        assert_eq!(post(&SharedLog::default(), Vec::new()).await.status(), StatusCode::OK);
     }
 
     #[tokio::test]
