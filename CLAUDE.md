@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`vtop` is a single-binary terminal monitor for one vLLM server (macOS vllm-metal, Linux NVIDIA). Rust 2024, ratatui 0.30. It polls vLLM's `/metrics`, samples hardware, and receives vLLM's OpenTelemetry request spans; four tabs render it all. The design spec is `docs/superpowers/specs/2026-10-27-vtop-design.md`; per-feature plans live in `docs/superpowers/plans/`.
+`vtop` is a single-binary terminal monitor for one vLLM server (macOS vllm-metal, Linux NVIDIA). Rust 2024, ratatui 0.30. It polls vLLM's `/metrics`, samples hardware, and receives vLLM's OpenTelemetry request spans; four tabs render it all. Design notes (spec and per-feature plans) live in `docs/superpowers/` on this machine only; `docs/` is git-ignored.
 
 ## Commands
 
@@ -50,4 +50,4 @@ Three collector threads write one `Arc<RwLock<Snapshot>>` (`src/snapshot.rs`); t
 - Known shortcuts are marked `shortcut: <limit>, <when to upgrade>` in code comments; treat them as decisions.
 - UI tests render into `ratatui::backend::TestBackend` and assert on the buffer text; histogram/table helpers that take `width`/`height` are tested directly. `tests/fixtures/` holds real captures (`metrics_live_vllm_metal.txt`, `otlp_llm_request.bin`) plus hand-made metric files; tests that need a time zone run in a child process rather than setting `TZ` in-process.
 - Releases are cargo-dist (`dist-workspace.toml`, `.github/workflows/release.yml`): tag `vX.Y.Z` → macOS arm64 and Linux x86_64/aarch64 archives, shell installer, Homebrew formula pushed to `hcgwjun/homebrew-tap` (needs the `HOMEBREW_TAP_TOKEN` secret).
-- `.superpowers/` is git-ignored scratch for plan execution ledgers; `docs/superpowers/` is committed.
+- `.superpowers/` (plan execution ledgers) and `docs/` (spec and plans) are git-ignored, local-only.
