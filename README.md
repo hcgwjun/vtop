@@ -16,17 +16,17 @@ cargo install --path .
 ```sh
 vtop --url http://127.0.0.1:8000     # vLLM base URL (default)
 vtop --ascii                         # plain ASCII sparklines
-vtop --proxy 127.0.0.1:8001          # also record per-request stats (see below)
+vtop --proxy                         # also record per-request stats (see below)
 ```
 
 ## Per-request stats (`--proxy`)
 
-vLLM's `/metrics` has no per-request numbers, so vtop can sit in front of the server as an OpenAI-compatible pass-through: it forwards every request and response byte-for-byte to `--url` (same path, method, headers, status, SSE stream) and records, per request, the model, status, prompt/output tokens, TTFT, duration and decode tok/s. Point clients at the proxy instead of vLLM:
+vLLM's `/metrics` has no per-request numbers, so vtop can sit in front of the server as an OpenAI-compatible pass-through: it forwards every request and response byte-for-byte to `--url` (same path, method, headers, status, SSE stream) and records, per request, the model, status, prompt/output tokens, TTFT, duration and decode tok/s. The proxy listens on `127.0.0.1:30800` (localhost only; `--proxy 9000` picks another port if that one is taken). Point clients at it instead of vLLM:
 
 ```sh
-vtop --url http://127.0.0.1:8000 --proxy 127.0.0.1:8001
-export OPENAI_BASE_URL=http://127.0.0.1:8001/v1        # OpenAI SDK
-export VL_REC_SERVER_URL=http://localhost:8001/v1      # paddlex OCR
+vtop --url http://127.0.0.1:8000 --proxy
+export OPENAI_BASE_URL=http://127.0.0.1:30800/v1       # OpenAI SDK
+export VL_REC_SERVER_URL=http://localhost:30800/v1     # paddlex OCR
 ```
 
 Rows appear at the bottom of Overview and in the Requests tab (`3`). Output tokens come from `usage`; streams without `stream_options.include_usage` fall back to counting content chunks, shown as `~N`. If vLLM is unreachable the client gets `502 vtop: upstream unreachable: ...` and the row shows `error`. Times are UTC.
