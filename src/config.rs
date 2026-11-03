@@ -10,13 +10,20 @@ pub struct Config {
     pub interval_ms: AtomicU64,
     pub url: String,
     pub ascii: bool,
+    /// The port the OTLP receiver actually bound, shown so vLLM can be pointed at it.
+    pub otlp_port: u16,
 }
 
 pub type SharedConfig = Arc<Config>;
 
 impl Config {
+    #[cfg(test)]
     pub fn new(url: String, ascii: bool) -> SharedConfig {
-        Arc::new(Self { interval_ms: AtomicU64::new(1000), url, ascii })
+        Self::with_otlp(url, ascii, 4318)
+    }
+
+    pub fn with_otlp(url: String, ascii: bool, otlp_port: u16) -> SharedConfig {
+        Arc::new(Self { interval_ms: AtomicU64::new(1000), url, ascii, otlp_port })
     }
 
     pub fn interval(&self) -> Duration {

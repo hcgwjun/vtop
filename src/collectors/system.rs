@@ -14,12 +14,58 @@ pub struct ProcInfo {
     pub start_time: u64,
 }
 
-/// The vLLM parent: the earliest-started `vllm serve` / api_server process; failing that, the earliest
-/// process whose command line mentions vllm at all (a venv path such as `.venv-vllm` also matches).
-pub fn find_serving<'a, I: Iterator<Item = &'a ProcInfo>>(procs: I) -> Option<&'a ProcInfo> {
+/// The vLLM parent: the earliest-started `vllm serve` / api_server process listening on `port` (from `--url`);
+/// failing that, the earliest such server on any port; failing that, the earliest process whose command line
+/// mentions vllm at all (a venv path such as `.venv-vllm` also matches).
+pub fn find_serving<'a, I: Iterator<Item = &'a ProcInfo>>(procs: I, port: Option<u16>) -> Option<&'a ProcInfo> {
     let loose: Vec<&ProcInfo> = procs.filter(|p| p.cmd.contains("vllm")).collect();
-    let strict = loose.iter().filter(|p| p.cmd.contains("vllm serve") || p.cmd.contains("vllm.entrypoints"));
-    strict.min_by_key(|p| p.start_time).or_else(|| loose.iter().min_by_key(|p| p.start_time)).copied()
+    let strict: Vec<&ProcInfo> =
+        loose.iter().copied().filter(|p| p.cmd.contains("vllm serve") || p.cmd.contains("vllm.entrypoints")).collect();
+    let on_port = strict.iter().filter(|p| port.is_some() && cmd_port(&p.cmd) == port);
+    on_port
+        .min_by_key(|p| p.start_time)
+        .or_else(|| strict.iter().min_by_key(|p| p.start_time))
+        .or_else(|| loose.iter().min_by_key(|p| p.start_time))
+        .copied()
+}
+
+/// `--port N` / `--port=N` from a vLLM command line; vLLM's default 8000 when absent.
+fn cmd_port(cmd: &str) -> Option<u16> {
+    let mut words = cmd.split_whitespace();
+    while let Some(w) = words.next() {
+        if w == "--port" {
+            return words.next()?.parse().ok();
+        }
+        if let Some(v) = w.strip_prefix("--port=") {
+            return v.parse().ok();
+        }
+    }
+    Some(8000)
+}
+
+/// `root` and every process below it, from `(pid, parent)` pairs.
+fn descendants(root: u32, pairs: &[(u32, Option<u32>)]) -> Vec<u32> {
+    let mut out = vec![root];
+    let mut i = 0;
+    while i < out.len() {
+        let cur = out[i];
+        out.extend(pairs.iter().filter(|(pid, parent)| *parent == Some(cur) && *pid != cur).map(|(pid, _)| *pid));
+        i += 1;
+    }
+    out
+}
+
+/// The serving process with CPU, RSS and threads summed over its whole tree; name, pid and uptime stay the root's.
+fn serving_tree(sys: &Sys, root: u32) -> Option<Process> {
+    let pairs: Vec<(u32, Option<u32>)> = sys.processes().values().map(|p| (p.pid().as_u32(), p.parent().map(|q| q.as_u32()))).collect();
+    let mut out = to_process(sys.process(sysinfo::Pid::from_u32(root))?);
+    out.pids = descendants(root, &pairs);
+    for p in out.pids[1..].iter().filter_map(|&pid| sys.process(sysinfo::Pid::from_u32(pid))) {
+        out.cpu_pct += p.cpu_usage() as f64;
+        out.rss += p.memory();
+        out.threads = out.threads.zip(p.tasks().map(|t| t.len() as u64)).map(|(a, b)| a + b);
+    }
+    Some(out)
 }
 
 #[cfg(test)]
@@ -66,6 +112,7 @@ fn to_process(p: &sysinfo::Process) -> Process {
         rss: p.memory(),
         threads: p.tasks().map(|t| t.len() as u64),
         gpu_mem: None,
+        pids: vec![p.pid().as_u32()],
     }
 }
 
@@ -78,6 +125,7 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
             let mut first = true;
             let mut last = Instant::now();
             let mut tick = 0u32;
+            let port = crate::collectors::vllm::url_port(&cfg.url);
             loop {
                 cfg.sleep_interval();
                 sys.refresh_cpu_usage();
@@ -100,7 +148,7 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
                 }
                 let (rx, tx) = nets.list().values().fold((0u64, 0u64), |(r, t), n| (r + n.received(), t + n.transmitted()));
 
-                let serving = find_serving(proc_infos(&sys).iter()).map(|i| i.pid);
+                let serving = find_serving(proc_infos(&sys).iter(), port).map(|i| i.pid);
                 let mut top: Vec<Process> = sys.processes().values().map(to_process).collect();
                 top.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct));
                 top.truncate(5);
@@ -119,7 +167,9 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
                     s.net_rx_bps = Some(rx as f64 / secs);
                     s.net_tx_bps = Some(tx as f64 / secs);
                 }
-                snap.process = serving.and_then(|pid| sys.process(sysinfo::Pid::from_u32(pid))).map(to_process);
+                // the hw thread fills gpu_mem; keep its last value so the header does not blink n/a between writes
+                let gpu_mem = snap.process.as_ref().filter(|p| Some(p.pid) == serving).and_then(|p| p.gpu_mem);
+                snap.process = serving.and_then(|pid| serving_tree(&sys, pid)).map(|p| Process { gpu_mem, ..p });
                 snap.top_processes = top;
                 first = false;
             }
@@ -138,8 +188,8 @@ mod tests {
             ProcInfo { pid: 2, cmd: "vllm serve x".into(), start_time: 10 },
             ProcInfo { pid: 3, cmd: "bash".into(), start_time: 1 },
         ];
-        assert_eq!(find_serving(procs.iter()).map(|p| p.pid), Some(2));
-        assert_eq!(find_serving([].iter()).map(|p| p.pid), None);
+        assert_eq!(find_serving(procs.iter(), None).map(|p| p.pid), Some(2));
+        assert_eq!(find_serving([].iter(), None).map(|p| p.pid), None);
     }
 
     #[test]
@@ -148,8 +198,29 @@ mod tests {
             ProcInfo { pid: 1, cmd: "/Users/me/.venv-vllm-metal/bin/python otlp_rx.py".into(), start_time: 1 },
             ProcInfo { pid: 2, cmd: "/Users/me/.venv-vllm-metal/bin/python /Users/me/.venv-vllm-metal/bin/vllm serve m".into(), start_time: 9 },
         ];
-        assert_eq!(find_serving(procs.iter()).map(|p| p.pid), Some(2));
-        assert_eq!(find_serving(procs[..1].iter()).map(|p| p.pid), Some(1), "fallback keeps the loose match");
+        assert_eq!(find_serving(procs.iter(), None).map(|p| p.pid), Some(2));
+        assert_eq!(find_serving(procs[..1].iter(), None).map(|p| p.pid), Some(1), "fallback keeps the loose match");
+    }
+
+    #[test]
+    fn find_serving_matches_the_url_port() {
+        let procs = [
+            ProcInfo { pid: 1, cmd: "python vllm serve a --port 8111".into(), start_time: 1 },
+            ProcInfo { pid: 2, cmd: "python vllm serve b --served-model-name b --port=8112".into(), start_time: 2 },
+            ProcInfo { pid: 3, cmd: "python vllm serve c".into(), start_time: 3 },
+        ];
+        assert_eq!(find_serving(procs.iter(), Some(8112)).map(|p| p.pid), Some(2));
+        assert_eq!(find_serving(procs.iter(), Some(8000)).map(|p| p.pid), Some(3), "no --port means vLLM's 8000");
+        assert_eq!(find_serving(procs.iter(), Some(9999)).map(|p| p.pid), Some(1), "no match falls back to the oldest");
+    }
+
+    #[test]
+    fn descendants_walks_the_tree() {
+        let pairs = [(10, Some(1)), (11, Some(10)), (12, Some(11)), (20, Some(1)), (13, Some(10))];
+        let mut d = descendants(10, &pairs);
+        d.sort();
+        assert_eq!(d, vec![10, 11, 12, 13]);
+        assert_eq!(descendants(99, &pairs), vec![99]);
     }
 
     #[test]

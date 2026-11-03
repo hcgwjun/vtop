@@ -74,6 +74,9 @@ pub struct Process {
     pub rss: u64,
     pub threads: Option<u64>,
     pub gpu_mem: Option<u64>,
+    /// This pid plus its descendants; the serving process's counters are summed over all of them
+    /// (vLLM's EngineCore child holds the model, not the `vllm serve` parent).
+    pub pids: Vec<u32>,
 }
 
 pub type Shared = Arc<RwLock<Snapshot>>;

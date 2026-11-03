@@ -1,5 +1,6 @@
 //! Apple Silicon power, frequency and temperature through the macmon crate (IOReport + SMC, no sudo).
-//! GPU memory is not in IOReport, so it comes from `ioreg`'s IOAccelerator statistics.
+//! GPU memory is not in IOReport, so it comes from `ioreg`'s IOAccelerator statistics (whole machine) and
+//! `footprint`'s "(graphics)" categories (the serving process tree only).
 
 use std::process::Command;
 use std::thread;
@@ -25,6 +26,31 @@ fn gpu_memory() -> (Option<u64>, Option<u64>) {
         .unwrap_or((None, None))
 }
 
+/// Bytes in the "(graphics)" rows (Metal buffers, i.e. the model and KV cache) of one `footprint -f bytes --pid`
+/// report; `None` when the report has no TOTAL row (process gone, or not ours to inspect).
+pub fn parse_footprint(text: &str) -> Option<u64> {
+    let mut sum = 0;
+    for line in text.lines() {
+        if line.trim_end().ends_with("TOTAL") {
+            return Some(sum);
+        }
+        if line.trim_end().ends_with("(graphics)") {
+            sum += line.split_whitespace().next()?.parse::<u64>().ok()?;
+        }
+    }
+    None
+}
+
+/// Metal memory summed over `pids`; one `footprint` run per pid (~70 ms), because a bare number in a
+/// multi-pid call is matched as a process name. `None` when no pid could be read.
+fn graphics_memory(pids: &[u32]) -> Option<u64> {
+    let each = pids.iter().filter_map(|pid| {
+        let out = Command::new("footprint").args(["-f", "bytes", "--pid", &pid.to_string()]).output().ok()?;
+        parse_footprint(&String::from_utf8_lossy(&out.stdout))
+    });
+    each.reduce(|a, b| a + b)
+}
+
 pub fn spawn(state: Shared, cfg: SharedConfig) {
     thread::Builder::new()
         .name("hw".into())
@@ -38,6 +64,7 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
             };
             let name = sampler.get_soc_info().chip_name.clone();
             let mut mem = (None, None);
+            let mut server_gpu: Option<(u32, u64)> = None; // (root pid, bytes)
             let mut tick = 0u32;
             loop {
                 // get_metrics blocks for the interval, so this thread needs no sleep
@@ -55,6 +82,8 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
                 // ioreg is a process spawn (~2-3% CPU per second), so refresh it every 5th sample
                 if tick.is_multiple_of(5) {
                     mem = gpu_memory();
+                    let tree = state.read().unwrap().process.as_ref().map(|p| p.pids.clone());
+                    server_gpu = tree.and_then(|pids| Some((pids[0], graphics_memory(&pids)?)));
                 }
                 tick += 1;
                 let (_, mem_used) = mem; // Alloc = what Metal/MLX holds; In use ignores it
@@ -72,6 +101,9 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
                 }];
                 snap.system.cpu_power_w = Some(m.cpu_power as f64);
                 snap.system.ane_power_w = Some(m.ane_power as f64);
+                if let Some(p) = snap.process.as_mut() {
+                    p.gpu_mem = server_gpu.filter(|(pid, _)| *pid == p.pid).map(|(_, b)| b);
+                }
                 snap.system.fans = m.fans.iter().map(|f| (f.name.clone(), f.rpm)).collect();
                 snap.errors.retain(|x| !x.starts_with("hw:"));
             }
@@ -94,6 +126,15 @@ mod tests {
     fn ioreg_parses_two_fields() {
         let text = r#"    "PerformanceStatistics" = {"In use system memory (driver)"=0,"Alloc system memory"=3999416320,"Tiler Utilization %"=2,"In use system memory"=1003257856}"#;
         assert_eq!(parse_ioreg(text), (Some(1003257856), Some(3999416320)));
+    }
+
+    #[test]
+    fn footprint_sums_graphics_rows() {
+        let text = include_str!("../../tests/fixtures/footprint_engine_core.txt");
+        assert_eq!(parse_footprint(text), Some(6_579_109_888), "a loaded vllm-metal EngineCore");
+        assert_eq!(parse_footprint("footprint: Unable to analyze process with pid 1 (try as root?)"), None);
+        let tiny = "  5 B  0 B  0 B  1    IOAccelerator (graphics)\n  7 B  0 B  0 B  1    Untagged\n  3 B  0 B  0 B  1    Owned physical footprint (unmapped) (graphics)\n 15 B  0 B  0 B  3    TOTAL\n  9 B  0 B  0 B  1    IOAccelerator (graphics)\n";
+        assert_eq!(parse_footprint(tiny), Some(8), "rows after TOTAL (auxiliary tables) are ignored");
     }
 
     #[test]

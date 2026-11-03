@@ -67,8 +67,15 @@ fn header_lines(app: &App, cfg: &Config) -> Vec<Line<'static>> {
     }
     let line2 = match &s.process {
         Some(p) => format!(
-            "{}  PID {} · up {} · CPU {:.0}% · RSS {}{}",
-            p.name, p.pid, uptime(p.uptime_s), p.cpu_pct, bytes(p.rss), sub(p.threads, |t| format!(" · {t} threads"))
+            "{}  PID {}{} · up {} · CPU {:.0}% · RSS {}{}{}",
+            p.name,
+            p.pid,
+            if p.pids.len() > 1 { format!(" +{}", p.pids.len() - 1) } else { String::new() },
+            uptime(p.uptime_s),
+            p.cpu_pct,
+            bytes(p.rss),
+            sub(p.gpu_mem, |b| format!(" · GPU {}", bytes(b))),
+            sub(p.threads, |t| format!(" · {t} threads"))
         ),
         None => "process: not found".into(),
     };
@@ -84,6 +91,14 @@ fn header_lines(app: &App, cfg: &Config) -> Vec<Line<'static>> {
         line2.push(e.clone().red().dim());
     }
     vec![Line::from(line1), Line::from(line2)]
+}
+
+/// The card's value is the whole machine (every model and app); the subtitle splits out this server's share
+/// and flags allocations beyond RAM, which on unified memory means the excess sits in swap or compression.
+fn gpu_mem_sub(server: Option<u64>, used: Option<u64>, total: Option<u64>) -> Option<String> {
+    let over = used.zip(total).filter(|(u, t)| u > t).map(|(u, t)| format!("over RAM +{}", bytes(u - t)));
+    let parts: Vec<String> = server.map(|b| format!("server {}", bytes(b))).into_iter().chain(over).collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 /// Subtitles are optional context, so a missing one is blank rather than n/a.
@@ -144,11 +159,14 @@ fn cards(app: &App) -> Vec<Card> {
                 (Some(u), None) => bytes(u),
                 _ => "n/a".into(),
             },
-            sub: format!(
-                "{}{}",
-                if cfg!(target_os = "macos") { "unified · " } else { "" },
-                sub(avg(|g| g.freq_mhz.map(|f| f as f64)), |x| format!("{} MHz", num(x, 0)))
-            ),
+            sub: gpu_mem_sub(s.process.as_ref().and_then(|p| p.gpu_mem), sum_u(|g| g.mem_used), sum_u(|g| g.mem_total))
+                .unwrap_or_else(|| {
+                    format!(
+                        "{}{}",
+                        if cfg!(target_os = "macos") { "unified · " } else { "" },
+                        sub(avg(|g| g.freq_mhz.map(|f| f as f64)), |x| format!("{} MHz", num(x, 0)))
+                    )
+                }),
             key: "gpu_mem",
             level: match (sum_u(|g| g.mem_used), sum_u(|g| g.mem_total)) {
                 (Some(u), Some(t)) if t > 0 => level(Some(u as f64 / t as f64 * 100.0), 80.0, 95.0),
@@ -196,7 +214,10 @@ fn overview(f: &mut Frame, app: &App, cfg: &Config, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(vec!["CPU  ".dim(), cpu.into(), "      RAM  ".dim(), ram.into()])), gauges);
     let mut lines = vec![Line::from("Recent requests".bold())];
     if app.requests.is_empty() {
-        lines.push(Line::from("no requests yet — point vLLM's --otlp-traces-endpoint at this vtop (see README)".dim()));
+        lines.push(Line::from(
+            // URL first so the port survives an 80-column cut
+            format!("no requests yet — send spans to http://127.0.0.1:{}/v1/traces (vLLM --otlp-traces-endpoint)", cfg.otlp_port).dim(),
+        ));
     } else {
         lines.extend(super::table::request_rows(&app.requests, requests.width, requests.height.saturating_sub(2) as usize));
     }
@@ -315,7 +336,7 @@ mod tests {
     #[test]
     fn otlp_hint_shown_when_log_empty() {
         let out = render_app(120, 40, &App::default());
-        assert!(out.contains("no requests yet") && out.contains("otlp-traces-endpoint"), "{out}");
+        assert!(out.contains("no requests yet") && out.contains("127.0.0.1:4318/v1/traces"), "{out}");
     }
 
     #[test]
@@ -344,6 +365,32 @@ mod tests {
         for needle in ["45.1", "3 run · 0 wait", "61 %", "96 %", "59 °C", "n/a", "process: not found"] {
             assert!(out.contains(needle), "missing {needle:?} in:\n{out}");
         }
+    }
+
+    #[test]
+    fn gpu_mem_sub_splits_server_and_flags_over_ram() {
+        let gb = 1u64 << 30;
+        assert_eq!(gpu_mem_sub(None, Some(10 * gb), Some(24 * gb)), None, "nothing to add: keep the default subtitle");
+        assert_eq!(gpu_mem_sub(Some(6 * gb), Some(10 * gb), Some(24 * gb)).as_deref(), Some("server 6.0 GB"));
+        assert_eq!(gpu_mem_sub(Some(6 * gb), Some(27 * gb), Some(24 * gb)).as_deref(), Some("server 6.0 GB · over RAM +3.0 GB"));
+        assert_eq!(gpu_mem_sub(None, Some(27 * gb), Some(24 * gb)).as_deref(), Some("over RAM +3.0 GB"));
+    }
+
+    #[test]
+    fn header_shows_the_server_tree_and_its_gpu_memory() {
+        let snap = Snapshot {
+            process: Some(crate::snapshot::Process {
+                pid: 32538,
+                name: "python".into(),
+                rss: 1 << 30,
+                gpu_mem: Some(5 << 30),
+                pids: vec![32538, 32581, 32582],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let out = render(160, 40, snap);
+        assert!(out.contains("PID 32538 +2") && out.contains("GPU 5.0 GB"), "{out}");
     }
 
     #[test]

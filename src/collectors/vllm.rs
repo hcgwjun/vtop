@@ -34,6 +34,13 @@ pub fn models_url(base: &str) -> String {
     format!("{}/v1/models", base_url(base))
 }
 
+/// The explicit port in the URL; `None` when it has none (then the serving process is not matched by port).
+pub fn url_port(base: &str) -> Option<u16> {
+    let b = base_url(base);
+    let host = b.split_once("://").map_or(b.as_str(), |(_, r)| r).split('/').next()?;
+    host.rsplit_once(':')?.1.parse().ok()
+}
+
 /// Polls `/metrics` every interval; three straight failures mark the server unreachable.
 pub fn spawn(state: Shared, cfg: SharedConfig) {
     thread::Builder::new()
@@ -350,6 +357,15 @@ mod url_tests {
         assert_eq!(metrics_url("http://h:8000/v1"), "http://h:8000/metrics", "OpenAI base URLs end in /v1");
         assert_eq!(metrics_url("http://h:8000/metrics"), "http://h:8000/metrics");
         assert_eq!(models_url("http://h:8000/v1/"), "http://h:8000/v1/models");
+    }
+
+    #[test]
+    fn url_port_reads_the_explicit_port() {
+        use super::url_port;
+        assert_eq!(url_port("http://localhost:8112/v1"), Some(8112));
+        assert_eq!(url_port("127.0.0.1:8000"), Some(8000));
+        assert_eq!(url_port("https://h/v1"), None);
+        assert_eq!(url_port("http://[::1]"), None);
     }
 }
 

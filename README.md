@@ -46,7 +46,7 @@ Put the two `export` lines in your shell profile or the script that starts vLLM.
 ```sh
 vtop                                   # vLLM at http://127.0.0.1:8000
 vtop --url http://127.0.0.1:8111       # another vLLM base URL (a /v1 suffix is fine)
-vtop --otlp 4319                       # another span port (then use :4319 in step 2)
+vtop --otlp 4319                       # a fixed span port (then use :4319 in step 2)
 vtop --ascii                           # plain ASCII sparklines
 ```
 
@@ -54,7 +54,8 @@ vtop --ascii                           # plain ASCII sparklines
 
 - The header shows `LIVE` and the model name: `/metrics` is reachable. `DISCONNECTED`: check `--url`.
 - Send one request. A row appears under "Recent requests" within about a second. If not, check vLLM's startup log for `otlp_traces_endpoint` and the two `OTEL_` variables.
-- `vtop` exits with `cannot bind otlp receiver`: port 4318 is taken (another vtop or an OpenTelemetry collector) — use `--otlp`.
+- Several vLLM servers: run one vtop per server. Without `--otlp`, each vtop takes the first free port of 4318–4327 and shows it under "Recent requests"; start that server's vLLM with that port. Pin it with `--otlp` if start order varies, or a restarted vtop may land on another server's port.
+- `vtop` exits with `cannot bind otlp receiver`: all of 4318–4327 (or your `--otlp` port) are taken — use `--otlp` with a free port.
 - `?` lists the keys, `q` quits.
 
 ## Screens

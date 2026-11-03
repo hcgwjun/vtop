@@ -1,7 +1,5 @@
 //! `POST /v1/traces` receiver for vLLM's `--otlp-traces-endpoint` (OTLP/HTTP, protobuf).
 
-use std::thread::JoinHandle;
-
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
@@ -31,12 +29,12 @@ async fn traces(State(log): State<SharedLog>, body: Bytes) -> Response {
     ([(CONTENT_TYPE, "application/x-protobuf")], Bytes::new()).into_response()
 }
 
-/// Binds now (so a taken port fails before the TUI starts) and serves on its own runtime thread.
-pub fn spawn(bind: &str, log: SharedLog) -> anyhow::Result<JoinHandle<()>> {
-    let listener =
-        std::net::TcpListener::bind(bind).map_err(|e| anyhow::anyhow!("cannot bind otlp receiver on {bind}: {e}"))?;
+/// Binds the first free port of `ports` on 127.0.0.1 now (so a taken port fails before the TUI starts), serves on
+/// its own runtime thread and returns the bound port.
+pub fn spawn(ports: &[u16], log: SharedLog) -> anyhow::Result<u16> {
+    let (listener, port) = bind_first(ports)?;
     listener.set_nonblocking(true)?;
-    let handle = std::thread::Builder::new().name("otlp".into()).spawn(move || {
+    std::thread::Builder::new().name("otlp".into()).spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().expect("tokio runtime");
         rt.block_on(async {
             let listener = tokio::net::TcpListener::from_std(listener).expect("tokio listener");
@@ -45,7 +43,26 @@ pub fn spawn(bind: &str, log: SharedLog) -> anyhow::Result<JoinHandle<()>> {
             }
         });
     })?;
-    Ok(handle)
+    Ok(port)
+}
+
+fn bind_first(ports: &[u16]) -> anyhow::Result<(std::net::TcpListener, u16)> {
+    let mut last = None;
+    for &port in ports {
+        match std::net::TcpListener::bind(("127.0.0.1", port)) {
+            Ok(l) => return Ok((l, port)),
+            Err(e) => last = Some(e),
+        }
+    }
+    let range = match ports {
+        [p] => p.to_string(),
+        [a, .., b] => format!("{a}-{b}"),
+        [] => "(none)".into(),
+    };
+    Err(anyhow::anyhow!(
+        "cannot bind otlp receiver on 127.0.0.1:{range}: {}\n(pick a free one with `vtop --otlp <PORT>` and point vLLM's --otlp-traces-endpoint at it)",
+        last.map_or("no port given".to_string(), |e| e.to_string())
+    ))
 }
 
 #[cfg(test)]
@@ -60,6 +77,16 @@ mod tests {
     async fn post(log: &SharedLog, body: Vec<u8>) -> axum::response::Response {
         let req = Request::post("/v1/traces").header("content-type", "application/x-protobuf").body(Body::from(body)).unwrap();
         router(log.clone()).oneshot(req).await.unwrap()
+    }
+
+    #[test]
+    fn bind_first_skips_a_taken_port() {
+        let (held, port) = bind_first(&[0]).unwrap(); // any free port
+        let port = if port == 0 { held.local_addr().unwrap().port() } else { port };
+        let (_, got) = bind_first(&[port, 0]).unwrap();
+        assert_eq!(got, 0, "the taken port is skipped");
+        let err = bind_first(&[port]).unwrap_err().to_string();
+        assert!(err.contains(&port.to_string()) && err.contains("--otlp"), "{err}");
     }
 
     #[tokio::test]

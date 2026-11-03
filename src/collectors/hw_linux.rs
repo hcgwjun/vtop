@@ -48,7 +48,7 @@ pub fn spawn(state: Shared, cfg: SharedConfig) {
                 let snap = &mut *guard;
                 snap.gpu = gpus;
                 for p in snap.top_processes.iter_mut().chain(snap.process.iter_mut()) {
-                    p.gpu_mem = proc_mem.get(&p.pid).copied();
+                    p.gpu_mem = p.pids.iter().filter_map(|pid| proc_mem.get(pid).copied()).reduce(|a, b| a + b);
                 }
                 drop(guard);
                 cfg.sleep_interval();

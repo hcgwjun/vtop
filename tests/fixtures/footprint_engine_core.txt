@@ -1,0 +1,43 @@
+======================================================================
+python [32268]: 64-bit    Footprint: 7258934680 B (16384 bytes per page)
+======================================================================
+
+      Dirty         Clean   Reclaimable    Regions    Category
+        ---           ---           ---        ---    ---
+6579109888 B           0 B           0 B       1627    IOAccelerator (graphics)
+290635776 B           0 B           0 B        106    Malloc Small
+282771456 B           0 B           0 B        286    Untagged
+ 70696960 B           0 B           0 B         45    Malloc Large
+ 13697024 B           0 B           0 B        749    __DATA_CONST
+ 10141054 B           0 B           0 B        776    __DATA
+  3506176 B           0 B           0 B         14    Malloc Metadata
+  2395544 B           0 B           0 B          1    page table
+  1851392 B           0 B           0 B        176    Stack
+  1687552 B           0 B           0 B         19    Dyld Private Memory
+   682067 B           0 B           0 B        410    __DATA_DIRTY
+   655360 B           0 B           0 B         14    IOAccelerator
+   229376 B           0 B           0 B          1    Malloc Tiny
+   212734 B           0 B           0 B       1416    unused dyld shared cache area
+   155641 B           0 B           0 B        265    __AUTH
+   131072 B           0 B           0 B          1    Deferred Reclaim
+   131000 B           0 B           0 B          4    __TPRO_CONST
+    65536 B           0 B           0 B          4    IOKit
+    65536 B           0 B           0 B          2    Malloc Nano
+    48000 B           0 B           0 B          1    __OBJC_RW
+    32768 B           0 B           0 B          1    Activity Tracing
+    32768 B           0 B           0 B          2    OS Alloc Once
+        0 B     8683520 B           0 B        831    __TEXT
+        0 B       16384 B           0 B          9    mapped file
+        0 B           0 B           0 B          1    __CTF
+        0 B           0 B           0 B        471    __AUTH_CONST
+        0 B           0 B           0 B          1    __FONT_DATA
+        0 B           0 B           0 B          1    IOSurface
+        0 B           0 B           0 B          1    __OBJC_RO
+        0 B           0 B           0 B        285    __LINKEDIT
+        ---           ---           ---        ---    ---
+7258934680 B     8699904 B           0 B       7522    TOTAL
+
+Auxiliary data:
+    phys_footprint: 7258934680 B
+    phys_footprint_peak: 8899906896 B
+

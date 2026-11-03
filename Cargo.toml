@@ -1,6 +1,6 @@
 [package]
 name = "vtop"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Terminal monitor for vLLM: server metrics, GPU/CPU hardware and per-request traces on one screen (macOS and Linux)"
 license = "MIT"

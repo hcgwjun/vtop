@@ -184,7 +184,7 @@ mod tests {
     }
 
     fn proc(name: &str, cpu: f64) -> Process {
-        Process { pid: 4242, name: name.into(), uptime_s: 10, cpu_pct: cpu, rss: 1 << 30, threads: None, gpu_mem: None }
+        Process { pid: 4242, name: name.into(), uptime_s: 10, cpu_pct: cpu, rss: 1 << 30, threads: None, gpu_mem: None, pids: vec![4242] }
     }
 
     fn snap() -> Snapshot {
